@@ -325,7 +325,7 @@ The following is the Sim2Real deployment flowchart:
 flowchart TD
     subgraph Perception ["Perception System"]
         Cam["RGB-D Camera"]
-        PN["Perception Node (SAM + FoundationPose)"]
+        PN["Perception Node<br/>(SAM + FoundationPose)"]
     end
 
     subgraph Policy ["Control System"]
@@ -334,24 +334,24 @@ flowchart TD
     end
 
     subgraph Hardware ["Physical Robot"]
-        RN["Robot Node (IIWA Arm + Sharpa Hand)"]
+        RN["Robot Node<br/>(IIWA Arm + Sharpa Hand)"]
     end
 
     %% Perception Connections
     Cam -- "RGB-D Images" --> PN
-    PN -- "/robot_frame/current_object_pose" --> RL
-    PN -- "/robot_frame/current_object_pose" --> GPN
+    PN -- "/robot_frame/<br/>current_object_pose" --> RL
+    PN -- "/robot_frame/<br/>current_object_pose" --> GPN
     
     %% Goal Pose Node Connections
-    GPN -- "/robot_frame/goal_object_pose" --> RL
+    GPN -- "/robot_frame/<br/>goal_object_pose" --> RL
     
     %% Robot State Connections (Feedback)
-    RN -- "/iiwa/joint_states" --> RL
-    RN -- "/sharpa/joint_states" --> RL
+    RN -- "/iiwa/<br/>joint_states" --> RL
+    RN -- "/sharpa/<br/>joint_states" --> RL
     
     %% Policy Command Connections (Actions)
-    RL -- "/iiwa/joint_cmd" --> RN
-    RL -- "/sharpa/joint_cmd" --> RN
+    RL -- "/iiwa/<br/>joint_cmd" --> RN
+    RL -- "/sharpa/<br/>joint_cmd" --> RN
 
     %% Styling
     classDef node fill:#f9f9f9,stroke:#333,stroke-width:2px;
@@ -373,7 +373,7 @@ The following is the Sim2Sim deployment flowchart (the Simulation Node at the to
 ```mermaid
 flowchart TD
     subgraph SimPerception ["Simulated Perception"]
-        SPN["Simulation Node (Simulates Perception)"]
+        SPN["Simulation Node<br/>(Simulates Perception)"]
     end
 
     subgraph Policy ["Control System"]
@@ -382,23 +382,23 @@ flowchart TD
     end
 
     subgraph SimHardware ["Simulated Robot"]
-        SRN["Simulation Node (Simulates Robot)"]
+        SRN["Simulation Node<br/>(Simulates Robot)"]
     end
 
     %% Perception Connections
-    SPN -- "/robot_frame/current_object_pose" --> RL
-    SPN -- "/robot_frame/current_object_pose" --> GPN
+    SPN -- "/robot_frame/<br/>current_object_pose" --> RL
+    SPN -- "/robot_frame/<br/>current_object_pose" --> GPN
     
     %% Goal Pose Node Connections
-    GPN -- "/robot_frame/goal_object_pose" --> RL
+    GPN -- "/robot_frame/<br/>goal_object_pose" --> RL
     
     %% Robot State Connections (Feedback)
-    SRN -- "/iiwa/joint_states" --> RL
-    SRN -- "/sharpa/joint_states" --> RL
+    SRN -- "/iiwa/<br/>joint_states" --> RL
+    SRN -- "/sharpa/<br/>joint_states" --> RL
     
     %% Policy Command Connections (Actions)
-    RL -- "/iiwa/joint_cmd" --> SRN
-    RL -- "/sharpa/joint_cmd" --> SRN
+    RL -- "/iiwa/<br/>joint_cmd" --> SRN
+    RL -- "/sharpa/<br/>joint_cmd" --> SRN
 
     %% Styling
     classDef node fill:#f9f9f9,stroke:#333,stroke-width:2px;
