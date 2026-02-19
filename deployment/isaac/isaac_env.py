@@ -169,9 +169,7 @@ def recursive_diff(cfg1: dict, cfg2: dict, path: str = "") -> dict:
 def main() -> None:
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     # DEVICE = "cpu"  # "cpu" faster for single env, but some bugs with cpu like force sensors not working
-    CONFIG_PATH = Path(
-        "/home/tylerlum/github_repos/sapg/closed_loop_testing/config.yaml"
-    )
+    CONFIG_PATH = Path("pretrained_policy/config.yaml")
     assert Path(CONFIG_PATH).exists()
 
     env = create_env(

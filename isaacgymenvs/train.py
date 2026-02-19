@@ -268,7 +268,8 @@ def launch_rlg_hydra(cfg: DictConfig, vec_env=None):
 
     FORCE_SAVE = False
     if FORCE_SAVE:
-        save_dir = "/home/tylerlum/github_repos/sapg/closed_loop_testing_pose_reaching"
+        from isaacgymenvs.utils.utils import get_repo_root_dir
+        save_dir = get_repo_root_dir() / "manually_saved_configs"
         os.makedirs(save_dir, exist_ok=True)
         with open(os.path.join(save_dir, "config.yaml"), "w") as f:
             f.write(OmegaConf.to_yaml(cfg))
