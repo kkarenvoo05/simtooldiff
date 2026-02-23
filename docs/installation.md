@@ -23,7 +23,7 @@ pip install \
 # More dependencies
 pip install pytorch3d "imageio[ffmpeg]" yourdfpy viser pytorch_kinematics mujoco ruff tyro
 
-# Isaacgyme stubs: https://x.com/QinYuzhe/status/1800288199136416178
+# Isaacgym stubs: https://x.com/QinYuzhe/status/1800288199136416178
 pip install isaacgym-stubs --upgrade
 
 # Download the Isaac Gym Preview 4 release from https://developer.nvidia.com/isaac-gym
