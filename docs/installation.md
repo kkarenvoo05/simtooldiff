@@ -8,6 +8,7 @@ We use Isaac Gym for policy learning in simulation, which requires Python 3.8.
 # Create a new conda environment for the Isaac Gym environment
 conda create -n simtoolreal_env python=3.8  # isaacgym requires Python 3.8
 conda activate simtoolreal_env
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 # Misc
 pip install \
