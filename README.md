@@ -124,6 +124,14 @@ See `dextoolbench/trajectories` for the list of task names following the directo
 
 ## Policy Learning in Simulation
 
+### WandB Setup
+
+Training logs are tracked with [Weights & Biases](https://wandb.ai/). Before training, log in and update the `wandb_entity` in `isaacgymenvs/launch_training.py` to your own WandB entity:
+
+```
+wandb login
+```
+
 ### Training a New Policy
 
 To train a policy from scratch, run the following command:
@@ -151,7 +159,7 @@ python isaacgymenvs/launch_training.py \
 --checkpoint pretrained_policy/model.pth
 ```
 
-If you run out of GPU memory, you can reduce the number of environments by setting `--num_envs` to a smaller number.
+If you run out of GPU memory, you can reduce the number of environments by setting `--num_envs` to a smaller number. Note that `num_envs` must be divisible by `num_blocks` (default 6).
 
 ```
 python isaacgymenvs/launch_training.py \
