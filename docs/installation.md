@@ -8,6 +8,7 @@ We use Isaac Gym for policy learning in simulation, which requires Python 3.8.
 # Create a new conda environment for the Isaac Gym environment
 conda create -n simtoolreal_env python=3.8  # isaacgym requires Python 3.8
 conda activate simtoolreal_env
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 # Misc
 pip install \
@@ -23,10 +24,12 @@ pip install \
 # More dependencies
 pip install pytorch3d "imageio[ffmpeg]" yourdfpy viser pytorch_kinematics mujoco ruff tyro
 
-# Isaacgyme stubs: https://x.com/QinYuzhe/status/1800288199136416178
+# Isaacgym stubs: https://x.com/QinYuzhe/status/1800288199136416178
 pip install isaacgym-stubs --upgrade
 
-# Download the Isaac Gym Preview 4 release from https://developer.nvidia.com/isaac-gym
+# Download and extract Isaac Gym Preview 4 to a directory outside of this repo
+wget https://developer.nvidia.com/isaac-gym-preview-4 -O IsaacGym_Preview_4_Package.tar.gz
+tar -xzf IsaacGym_Preview_4_Package.tar.gz
 cd isaacgym/python
 pip install -e .
 pip install numpy==1.23.0  # isaacgym does not support numpy 1.24+
