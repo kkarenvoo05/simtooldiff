@@ -48,6 +48,7 @@ class WandbAlgoObserver(AlgoObserver):
         print('Initializing WandB...')
         try:
             init_wandb()
+            wandb.define_metric("*", step_metric="global_step")
         except Exception as exc:
             print(f'Could not initialize WandB! {exc}')
 
