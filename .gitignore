@@ -211,3 +211,8 @@ dextoolbench/data/
 
 # Pretrained policy
 pretrained_policy/
+
+# Training output
+train_dir/
+runs/
+wandb/
