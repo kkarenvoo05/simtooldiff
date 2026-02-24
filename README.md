@@ -587,15 +587,25 @@ URDF files:
 ```
 
 
+# Acknowledgements
+
+This implementation builds upon the following codebases:
+
+1. [IsaacGymEnvs](https://github.com/isaac-sim/IsaacGymEnvs)
+2. [rl_games](https://github.com/Denys88/rl_games)
+3. [SAPG](https://github.com/jayeshs999/sapg)
+
 # Citation
 
 ```
-@inproceedings{TODO,
-  title     = {TODO},
-  author    = {TODO},
-  booktitle = {TODO},
-  year      = {TODO},
-  url       = {TODO}
+@misc{kedia2026simtoolrealobjectcentricpolicyzeroshot,
+      title={SimToolReal: An Object-Centric Policy for Zero-Shot Dexterous Tool Manipulation},
+      author={Kushal Kedia and Tyler Ga Wei Lum and Jeannette Bohg and C. Karen Liu},
+      year={2026},
+      eprint={2602.16863},
+      archivePrefix={arXiv},
+      primaryClass={cs.RO},
+      url={https://arxiv.org/abs/2602.16863}
 }
 ```
 
