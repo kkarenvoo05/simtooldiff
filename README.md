@@ -71,19 +71,17 @@ pretrained_policy/
 
 ### Run Interactive Evaluation
 
-Then, run the interactive evaluation script with the pretrained policy on a specific task in the DexToolBench.
+Then, run the interactive evaluation script with the pretrained policy:
 
 ```
-python dextoolbench/eval.py \
---object_category hammer \
---object_name claw_hammer \
---task_name swing_down \
---config_path pretrained_policy/config.yaml \
---checkpoint_path pretrained_policy/model.pth \
---interactive
+python dextoolbench/eval_interactive.py \
+--config-path pretrained_policy/config.yaml \
+--checkpoint-path pretrained_policy/model.pth
 ```
 
-https://github.com/user-attachments/assets/44dd6f4c-970e-4e0d-b0be-38b3e91f4a04
+This launches a web-based interactive demo (default at `http://localhost:8080`) where you can select the tool category, object instance, and task from dropdown menus, then load the environment and run episodes. You can optionally specify a custom port with `--port` for the viser server.
+
+https://github.com/user-attachments/assets/58eb188b-662c-4190-8148-29710c9eb20f
 
 
 The following is the full DexToolBench data structure:
