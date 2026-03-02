@@ -15,7 +15,7 @@ pip install \
   torch torchvision \
   numpy scipy matplotlib networkx \
   gym pyrender trimesh urdfpy \
-  hydra-core wandb tensorboard tensorboardx \
+  hydra-core wandb==0.12.21 tensorboard tensorboardx \
   opencv-python imageio pillow transforms3d \
   ipykernel \
   requests pyopenssl \
