@@ -41,7 +41,11 @@ simtoolreal
   │   └── // Interface and tools for saving, loading, and visualizing recorded data
   └── rl_games
       └── // RL algorithms, including PPO and SAPG
+
 ```
+
+**External repos:**
+[FoundationPose](https://github.com/kushal2000/FoundationPose) — Perception system (SAM + FoundationPose pose tracking)
 
 # Installation
 
@@ -310,7 +314,14 @@ python dextoolbench/interactive_adjust_object.py \
 
 ### Data Collection and Processing
 
-See [data_collection_and_processing.md](docs/data_collection_and_processing.md) for more details.
+To collect new task demonstrations from the real world, you need a ZED camera
+and the [FoundationPose fork](https://github.com/kushal2000/FoundationPose)
+(installed in a separate conda environment). The pipeline is:
+record RGB-D video → extract object mesh with SAM 3D (TODO) → extract 6D poses
+with FoundationPose → process into DexToolBench task trajectories.
+
+See [data_collection_and_processing.md](docs/data_collection_and_processing.md)
+for the full step-by-step guide.
 
 ## Deployment
 
@@ -320,10 +331,10 @@ For Sim2Real policy deployment, we need to run the following nodes:
 
 1. RL Policy Node: Takes in observations, runs policy to get raw actions, converts to joint position targets, and publishes these targets.
 2. Goal Pose Node: Stores a sequence of goal poses, takes in object pose, updates current goal pose if dist(goal, object) < threshold, and publishes the current goal pose.
-3. Perception Node: Takes in RGB-D images, uses SAM and FoundationPose to get object pose, and publishes these poses.
+3. Perception Node: Takes in RGB-D images, uses SAM and FoundationPose to get object pose, and publishes these poses. See the [FoundationPose fork](https://github.com/kushal2000/FoundationPose) for setup and usage.
 4. Robot Node: Sends joint position targets to robot and publishes joint states.
 
-(1) and (2) are in this repo, but (3) and (4) are not in this repo.
+(1) and (2) are in this repo. (3) is in the [FoundationPose fork](https://github.com/kushal2000/FoundationPose). (4) is not in this repo.
 
 The following is the Sim2Real deployment flowchart:
 
@@ -372,7 +383,7 @@ Before testing the policy in the real world, we can test it in simulation using 
 2. Goal Pose Node: (same as above)
 3. Simulation Node: Takes in joint position targets, runs the simulation environment and publishes the simulation state (robot state and object pose). Replaces the robot node and perception node.
 
-(1) and (2) are in this repo, but (3) and (4) are not in this repo.
+(1) and (2) are in this repo. (3) is handled by the Simulation Node.
 
 The following is the Sim2Sim deployment flowchart (the Simulation Node at the top and bottom are the same node, but separated in the diagram for clarity/symmetry with the Sim2Real deployment flowchart):
 
@@ -454,21 +465,32 @@ flowchart LR
 
 #### Sim2Real
 
-If running in real world, run the following nodes (not included in this repo):
+**Prerequisites:**
+- **Hardware**: IIWA arm, Sharpa hand, ZED stereo camera
+- **FoundationPose**: Clone and install the [FoundationPose fork](https://github.com/kushal2000/FoundationPose) in a **separate conda environment** (`foundationpose`). Follow its README for installation, model weight download, and ROS setup.
+- **Calibration**: A camera-to-robot transform `T_RC` specific to your setup. An example is provided at `FoundationPose/calibration/T_RC_example.txt`.
+- **Object mesh**: `.obj` file (in meters) for the object being manipulated. See [data_collection_and_processing.md](docs/data_collection_and_processing.md) for mesh extraction (TODO: SAM 3D).
 
-```
-# Arm
+Run the following nodes in separate terminals:
+
+```bash
+# Terminal 1: Arm (ROS)
 roslaunch iiwa_control joint_position_control.launch
 ```
 
-```
-# Hand
+```bash
+# Terminal 2: Hand
+conda activate simtoolreal_env
 python deployment/sharpa_node.py
 ```
 
-```
-# Perception
-python live_tracking_with_ros.py
+```bash
+# Terminal 3: Perception (separate conda environment)
+conda activate foundationpose
+cd /path/to/FoundationPose
+python live_tracking_with_ros.py \
+    --mesh_path <mesh.obj> \
+    --calibration calibration/T_RC_example.txt
 ```
 
 #### Sim2Sim
