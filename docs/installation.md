@@ -1,68 +1,62 @@
 # Installation
 
+## Prerequisites
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
 ## Main Environment
 
 We use Isaac Gym for policy learning in simulation, which requires Python 3.8.
 
-```
-# Create a new conda environment for the Isaac Gym environment
-conda create -n simtoolreal_env python=3.8  # isaacgym requires Python 3.8
-conda activate simtoolreal_env
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
+```bash
+# Create a virtual environment with Python 3.8
+uv venv --python 3.8
 
-# Misc
-pip install \
-  torch torchvision \
-  numpy scipy matplotlib networkx \
-  gym pyrender trimesh urdfpy \
-  hydra-core wandb==0.12.21 tensorboard tensorboardx \
-  opencv-python imageio pillow transforms3d \
-  ipykernel \
-  requests pyopenssl \
-  warp-lang ninja pyvirtualdisplay
+# Auto-set LD_LIBRARY_PATH on activate (needed for Isaac Gym to find libpython3.8)
+echo 'export LD_LIBRARY_PATH=$(python -c "import sysconfig; print(sysconfig.get_config_var(\"LIBDIR\"))"):$LD_LIBRARY_PATH' >> .venv/bin/activate
 
-# More dependencies
-pip install pytorch3d "imageio[ffmpeg]" yourdfpy viser pytorch_kinematics mujoco ruff tyro
+source .venv/bin/activate
 
-# Isaacgym stubs: https://x.com/QinYuzhe/status/1800288199136416178
-pip install isaacgym-stubs --upgrade
+# Install the project and all dependencies
+uv pip install -e .
 
 # Download and extract Isaac Gym Preview 4 to a directory outside of this repo
 wget https://developer.nvidia.com/isaac-gym-preview-4 -O IsaacGym_Preview_4_Package.tar.gz
 tar -xzf IsaacGym_Preview_4_Package.tar.gz
 cd isaacgym/python
-pip install -e .
-pip install numpy==1.23.0  # isaacgym does not support numpy 1.24+
+uv pip install -e .
+cd -
 
 # Install this repo's rl_games
-cd <this repo>/rl_games
-pip install -e .
-
-# Install this repo
-cd <this repo>
-pip install -e .
+cd rl_games
+uv pip install -e .
+cd -
 ```
 
 ## Sim2Real Env
 
-For real-world deployment, we use need ROS1 Noetic. This can either be installed globally or using RoboStack.
+For real-world deployment, we need ROS1 Noetic. This can either be installed globally or using RoboStack.
 
 ### Global ROS
 
-Follow the instructions at https://wiki.ros.org/noetic/Installation/Ubuntu to install ROS1 Noetic globally. Then you will need to source the ROS environment variables in your shell:
+Follow the instructions at https://wiki.ros.org/noetic/Installation/Ubuntu to install ROS1 Noetic globally. Then source the ROS environment variables in your shell:
 
-```
+```bash
 source /opt/ros/noetic/setup.bash
 ```
 
-Now, you can simply use this global ROS setup with the `simtoolreal_env` conda environment above.
+Now, you can use this global ROS setup with the virtual environment above.
 
 You may need to run:
 
-```
-pip install rospkg
+```bash
+uv pip install rospkg
 ```
 
 ### RoboStack
 
-Note that the RoboStack option requires a separate conda environment because it requires Python 3.11+. Follow the instructions at https://robostack.github.io/noetic.html to create a conda environment with ROS1 Noetic. Then follow the installation instructions above for the main environment (skip the conda environment creation and Isaac Gym installation).
+Note that the RoboStack option requires a separate environment because it requires Python 3.11+. Follow the instructions at https://robostack.github.io/noetic.html to create an environment with ROS1 Noetic. Then follow the installation instructions above for the main environment (skip the venv creation and Isaac Gym installation).

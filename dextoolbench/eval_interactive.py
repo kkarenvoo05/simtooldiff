@@ -216,7 +216,14 @@ def sim_worker(conn, category, object_name, task_name, table_urdf,
                config_path, checkpoint_path):
     """Child process entry-point.  Creates the env, then waits for commands."""
     # ── Heavy imports (only in the subprocess) ────────────────
-    from isaacgym import gymapi  # noqa: F401 isort:skip
+    try:
+        from isaacgym import gymapi  # noqa: F401 isort:skip
+    except ImportError:
+        conn.send(("error",
+                   "Isaac Gym is not installed. Download Isaac Gym Preview 4 "
+                   "from https://developer.nvidia.com/isaac-gym-preview-4 and "
+                   "install with: cd isaacgym/python && uv pip install -e ."))
+        return
     import json, torch  # noqa: E401
     from isaacgymenvs.utils.utils import get_repo_root_dir
     from deployment.rl_player import RlPlayer
