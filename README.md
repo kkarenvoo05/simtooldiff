@@ -316,7 +316,7 @@ python dextoolbench/interactive_adjust_object.py \
 
 To collect new task demonstrations from the real world, you need a ZED camera
 and the [FoundationPose fork](https://github.com/kushal2000/FoundationPose)
-(installed in a separate conda environment). The pipeline is:
+(installed in a separate environment). The pipeline is:
 record RGB-D video → extract object mesh with SAM 3D (TODO) → extract 6D poses
 with FoundationPose → process into DexToolBench task trajectories.
 
@@ -467,7 +467,7 @@ flowchart LR
 
 **Prerequisites:**
 - **Hardware**: IIWA arm, Sharpa hand, ZED stereo camera
-- **FoundationPose**: Clone and install the [FoundationPose fork](https://github.com/kushal2000/FoundationPose) in a **separate conda environment** (`foundationpose`). Follow its README for installation, model weight download, and ROS setup.
+- **FoundationPose**: Clone and install the [FoundationPose fork](https://github.com/kushal2000/FoundationPose) in a **separate environment** (`foundationpose`). Follow its README for installation, model weight download, and ROS setup.
 - **Calibration**: A camera-to-robot transform `T_RC` specific to your setup. An example is provided at `FoundationPose/calibration/T_RC_example.txt`.
 - **Object mesh**: `.obj` file (in meters) for the object being manipulated. See [data_collection_and_processing.md](docs/data_collection_and_processing.md) for mesh extraction (TODO: SAM 3D).
 
@@ -480,13 +480,13 @@ roslaunch iiwa_control joint_position_control.launch
 
 ```bash
 # Terminal 2: Hand
-conda activate simtoolreal_env
+source .venv/bin/activate
 python deployment/sharpa_node.py
 ```
 
 ```bash
-# Terminal 3: Perception (separate conda environment)
-conda activate foundationpose
+# Terminal 3: Perception (separate environment)
+# Activate the FoundationPose environment (see FoundationPose README)
 cd /path/to/FoundationPose
 python live_tracking_with_ros.py \
     --mesh_path <mesh.obj> \
