@@ -82,13 +82,6 @@ class GoalPoseNode:
         self.force_fixed_orientation = force_fixed_orientation
         self.current_success_steps = 0
 
-        # Force open loop mode, i.e., do not use the current object pose to update the goal pose, but update it at a fixed rate.
-        if force_open_loop:
-            self.latest_current_object_pose = Pose()
-            self.success_threshold = 10.0
-            self.keypoint_success_threshold = self.success_threshold * KEYPOINT_SCALE
-            self.success_steps = 30
-
         # Goal object pose
         self.goal_object_poses = goal_poses_robot_frame
         N = len(self.goal_object_poses)
@@ -117,6 +110,13 @@ class GoalPoseNode:
         self.rate_hz = 60
         self.dt = 1 / self.rate_hz
         self.rate = rospy.Rate(self.rate_hz)
+
+        # Force open loop mode, i.e., do not use the current object pose to update the goal pose, but update it at a fixed rate.
+        if force_open_loop:
+            self.latest_current_object_pose = Pose()
+            self.success_threshold = 10.0
+            self.keypoint_success_threshold = self.success_threshold * KEYPOINT_SCALE
+            self.success_steps = 30
 
     def current_object_pose_callback(self, msg: PoseStamped):
         """Callback to update the current object pose."""
