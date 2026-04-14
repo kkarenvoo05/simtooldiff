@@ -33,17 +33,54 @@ recordings/<timestamp>/
 
 ## Step 2: Extract Object Mesh (SAM 2 + SAM 3D)
 
-> **TODO**: This section will be filled in by Tyler.
+Use the SimToolReal branches of the SAM2 and SAM3D repos:
 
-Link: TBD
+* SAM2: https://github.com/tylerlum/segment-anything-2-real-time/tree/SimToolReal
+* SAM3D: https://github.com/tylerlum/sam-3d-objects/tree/SimToolReal
 
-### Installation
+Follow the installation instructions in those repos and create **separate `uv` virtual environments** for SAM2 and SAM3D. Do not try to share one environment across both repos.
 
-TBD
+The main entrypoint for this step is `run_mesh_pipeline.sh` in the SAM2 repo. Before running it, open that script and update the configuration at the top for your machine:
 
-### Usage
+* `SAM2_REPO`
+* `SAM3_REPO`
+* `DEMO_DIR`
+* `OUTPUT_DIR`
+* any environment activation assumptions in the `sam2()` and `sam3()` helper functions if your local setup differs
 
-TBD
+In particular, make sure:
+
+* `SAM2_REPO` points to your local `segment-anything-2-real-time` checkout
+* `SAM3_REPO` points to your local `sam-3d-objects` checkout
+* `DEMO_DIR` points to the recorded data directory containing `rgb/`, `depth/`, and `cam_K.txt`
+* `OUTPUT_DIR` points to where you want the reconstruction and processed mesh artifacts written
+
+Then run the pipeline from the SAM2 repo root:
+
+```bash
+cd /path/to/segment-anything-2-real-time
+bash run_mesh_pipeline.sh
+```
+
+At a high level, the script will:
+
+1. run SAM2 on the recorded RGB frames to create object masks
+2. run SAM3D to reconstruct the object mesh from the RGB-D data and masks
+3. render the reconstructed mesh into RGB/depth views
+4. run SAM2 on those rendered views to create handle and head masks
+5. run the final mesh postprocessing step to compute the canonical handle frame and export the final mesh
+
+One small detail: the SAM2 stage writes masks for **all** frames in the original video, but the current SAM3D reconstruction step only strictly uses the **first** RGB image, **first** depth image, and **first** mask image. We still run SAM2 over the full sequence because it is useful to have all masks available.
+
+The script prints step banners as it runs, and depending on how the prompt arguments are configured, it may ask you to click points on the first frame to initialize SAM2.
+
+For more detail, read `run_mesh_pipeline.sh` directly. That script is the source of truth for the exact command sequence and the environment assumptions.
+
+The final result should be a metric-scale `.obj` mesh ready for downstream use in FoundationPose and SimToolReal. The main exported artifact is:
+
+```bash
+${OUTPUT_DIR}/mesh_handle_frame/mesh_handle_frame.obj
+```
 
 ## Step 3: Extract 6D Poses with FoundationPose
 

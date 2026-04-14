@@ -317,7 +317,7 @@ python dextoolbench/interactive_adjust_object.py \
 To collect new task demonstrations from the real world, you need a ZED camera
 and the [FoundationPose fork](https://github.com/kushal2000/FoundationPose)
 (installed in a separate environment). The pipeline is:
-record RGB-D video → extract object mesh with SAM 3D (TODO) → extract 6D poses
+record RGB-D video → extract object mesh with SAM 2 + SAM 3D → extract 6D poses
 with FoundationPose → process into DexToolBench task trajectories.
 
 See [data_collection_and_processing.md](docs/data_collection_and_processing.md)
@@ -469,7 +469,7 @@ flowchart LR
 - **Hardware**: IIWA arm, Sharpa hand, ZED stereo camera
 - **FoundationPose**: Clone and install the [FoundationPose fork](https://github.com/kushal2000/FoundationPose) in a **separate environment** (`foundationpose`). Follow its README for installation, model weight download, and ROS setup.
 - **Calibration**: A camera-to-robot transform `T_RC` specific to your setup. An example is provided at `FoundationPose/calibration/T_RC_example.txt`.
-- **Object mesh**: `.obj` file (in meters) for the object being manipulated. See [data_collection_and_processing.md](docs/data_collection_and_processing.md) for mesh extraction (TODO: SAM 3D).
+- **Object mesh**: `.obj` file (in meters) for the object being manipulated. See [data_collection_and_processing.md](docs/data_collection_and_processing.md) for mesh extraction with SAM 2 + SAM 3D.
 
 Run the following nodes in separate terminals:
 
