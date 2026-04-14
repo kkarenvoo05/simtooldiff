@@ -58,42 +58,6 @@ For the current `hamer_depth` SimToolReal workflow, the SAM-mask path does **not
 
 For more detail, read `run_hand_pipeline.sh` directly. That script is the source of truth for the exact command sequence and environment assumptions.
 
-If you want to run HaMeR Depth manually, the core command is:
-
-```bash
-python run.py \
---rgb-path data/demo/rgb \
---depth-path data/demo/depth \
---mask-path data/demo/hand_mask \
---cam-intrinsics-path data/demo/cam_K.txt \
---out-path data/demo/hand_pose_trajectory
-```
-
-This produces:
-
-```bash
-data/demo/hand_pose_trajectory
-├── 00000.json
-├── 00000.obj
-├── 00000.png
-├── 00001.json
-├── 00001.obj
-├── 00001.png
-├── ...
-```
-
-The script assumes the hands are right hands by default. For left hands, run:
-
-```bash
-python run.py \
---rgb-path data/demo/rgb \
---depth-path data/demo/depth \
---mask-path data/demo/hand_mask \
---cam-intrinsics-path data/demo/cam_K.txt \
---out-path data/demo/hand_pose_trajectory \
---hand-type LEFT
-```
-
 ### Visualize the Hand Pose Extraction and Retargeting
 
 ```
