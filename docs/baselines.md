@@ -4,9 +4,95 @@
 
 ### Hand Pose Extraction
 
-To run this baseline, we first need to perform additional processing on the data, which includes (1) using SAM2 to extract hand masks and (2) using hamer_depth to extract 3D hand poses. This will give `hand_masks` and `hand_pose_trajectory` directories for each demo.
+To run this baseline, we first need to perform additional processing on the data:
 
-TODO: Add instructions for how to run SAM2 and hamer_depth.
+1. use SAM2 to extract hand masks over the RGB video frames
+2. use `hamer_depth` to estimate 3D hand poses with HaMeR and then refine them with the depth images
+
+This produces:
+
+* `hand_mask/`
+* `hand_pose_trajectory/`
+
+Use the SimToolReal branches of the two external repos:
+
+* SAM2: https://github.com/tylerlum/segment-anything-2-real-time/tree/SimToolReal
+* HaMeR Depth: https://github.com/tylerlum/hamer_depth/tree/SimToolReal
+
+Follow the installation instructions in those repos and create **separate `uv` environments** for SAM2 and HaMeR Depth. Do not duplicate or merge the environments.
+
+The recommended entrypoint is `run_hand_pipeline.sh` in the SAM2 repo. Before running it, open the script and update the configuration at the top for your machine:
+
+* `SAM2_REPO`
+* `HAMER_DEPTH_REPO`
+* `DEMO_DIR`
+* `HAND_MASK_DIR`
+* `HAND_POSE_TRAJECTORY_DIR`
+* `HAND_PROMPT_ARGS`
+* `HAND_TYPE`
+
+In particular:
+
+* `DEMO_DIR` should point to a demo directory containing `rgb/`, `depth/`, and `cam_K.txt`
+* `HAND_MASK_DIR` is where SAM2 will write the hand masks
+* `HAND_POSE_TRAJECTORY_DIR` is where HaMeR Depth will write the per-frame outputs
+* `HAND_PROMPT_ARGS` controls how SAM2 initializes the hand mask tracking. The current default uses `--use_negative_prompt`, which lets you click the hand first and then click the arm to exclude it.
+* `HAND_TYPE` defaults to `RIGHT`; change it to `LEFT` if your demo contains a left hand
+
+Then run the pipeline from the SAM2 repo root:
+
+```bash
+cd /path/to/segment-anything-2-real-time
+bash run_hand_pipeline.sh
+```
+
+At a high level, the script will:
+
+1. run SAM2 on the original RGB frames to create `hand_mask/`
+2. run HaMeR Depth on `rgb/`, `depth/`, `hand_mask/`, and `cam_K.txt`
+3. save the resulting hand pose outputs into `hand_pose_trajectory/`
+
+The script prints step banners as it runs. Depending on how `HAND_PROMPT_ARGS` is configured, SAM2 may ask you to click points on the first frame to initialize the hand mask tracking.
+
+For the current `hamer_depth` SimToolReal workflow, the SAM-mask path does **not** require Detectron2 or GroundingDINO. It uses the SAM2 hand mask to define the hand crop and then runs HaMeR + depth refinement on that result.
+
+For more detail, read `run_hand_pipeline.sh` directly. That script is the source of truth for the exact command sequence and environment assumptions.
+
+If you want to run HaMeR Depth manually, the core command is:
+
+```bash
+python run.py \
+--rgb-path data/demo/rgb \
+--depth-path data/demo/depth \
+--mask-path data/demo/hand_mask \
+--cam-intrinsics-path data/demo/cam_K.txt \
+--out-path data/demo/hand_pose_trajectory
+```
+
+This produces:
+
+```bash
+data/demo/hand_pose_trajectory
+├── 00000.json
+├── 00000.obj
+├── 00000.png
+├── 00001.json
+├── 00001.obj
+├── 00001.png
+├── ...
+```
+
+The script assumes the hands are right hands by default. For left hands, run:
+
+```bash
+python run.py \
+--rgb-path data/demo/rgb \
+--depth-path data/demo/depth \
+--mask-path data/demo/hand_mask \
+--cam-intrinsics-path data/demo/cam_K.txt \
+--out-path data/demo/hand_pose_trajectory \
+--hand-type LEFT
+```
 
 ### Visualize the Hand Pose Extraction and Retargeting
 
