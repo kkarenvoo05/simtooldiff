@@ -135,6 +135,9 @@ class SimToolReal(VecTask):
 
         self.randomize = self.cfg["task"]["randomize"]
         self.randomization_params = self.cfg["task"]["randomization_params"]
+        self.enable_dataset_cameras = self.cfg["env"].get("enableDatasetCameras", False)
+        self.dataset_camera_handles = []
+        self.dataset_camera_tensors = []
 
         self.distance_delta_rew_scale = self.cfg["env"]["distanceDeltaRewScale"]
         self.lifting_rew_scale = self.cfg["env"]["liftingRewScale"]
@@ -383,6 +386,7 @@ class SimToolReal(VecTask):
 
         # Init camera for wandb logging
         self._initialize_camera_sensor(cam_pos=cam_pos, cam_target=cam_target)
+        self._initialize_dataset_camera_tensors()
         self._modify_render_settings_if_headless()
 
         # volume to sample target position from
@@ -1305,6 +1309,9 @@ class SimToolReal(VecTask):
         goal_start_pose = gymapi.Transform()
         goal_start_pose.p = self.object_start_pose.p + self.goal_displacement
         goal_start_pose.p.z -= 0.04
+        if not self.cfg["env"].get("showGoalObjectVisual", True):
+            goal_start_pose.p = gymapi.Vec3(100.0, 100.0, -100.0)
+            goal_start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
 
         goal_asset = self.goal_assets[object_asset_idx]
         goal_handle = self.gym.create_actor(
@@ -1334,6 +1341,83 @@ class SimToolReal(VecTask):
         self.goal_object_indices = to_torch(
             self.goal_object_indices, dtype=torch.long, device=self.device
         )
+
+    def _hide_goal_object_visual(self, env_ids: Tensor) -> None:
+        goal_indices = self.goal_object_indices[env_ids]
+        self.root_state_tensor[goal_indices, 0:3] = torch.tensor(
+            [100.0, 100.0, -100.0], dtype=self.root_state_tensor.dtype, device=self.device
+        )
+        self.root_state_tensor[goal_indices, 3:7] = torch.tensor(
+            [0.0, 0.0, 0.0, 1.0],
+            dtype=self.root_state_tensor.dtype,
+            device=self.device,
+        )
+        self.root_state_tensor[goal_indices, 7:13] = torch.zeros_like(
+            self.root_state_tensor[goal_indices, 7:13]
+        )
+
+    def _create_dataset_camera(self, env_ptr) -> None:
+        camera_properties = gymapi.CameraProperties()
+        camera_properties.width = self.cfg["env"].get("datasetCameraWidth", 224)
+        camera_properties.height = self.cfg["env"].get("datasetCameraHeight", 224)
+        camera_properties.horizontal_fov = self.cfg["env"].get(
+            "datasetCameraHorizontalFov", 70.0
+        )
+        camera_properties.enable_tensors = True
+
+        camera_handle = self.gym.create_camera_sensor(env_ptr, camera_properties)
+        if camera_handle == -1:
+            raise RuntimeError("Failed to create dataset camera sensor")
+
+        camera_pos = gymapi.Vec3(*self.cfg["env"]["datasetCameraPosition"])
+        camera_target = gymapi.Vec3(*self.cfg["env"]["datasetCameraTarget"])
+        self.gym.set_camera_location(camera_handle, env_ptr, camera_pos, camera_target)
+        self.dataset_camera_handles.append(camera_handle)
+
+    def _initialize_dataset_camera_tensors(self) -> None:
+        if not self.enable_dataset_cameras:
+            return
+
+        assert len(self.dataset_camera_handles) == self.num_envs, (
+            f"Expected {self.num_envs} dataset cameras, got {len(self.dataset_camera_handles)}"
+        )
+        self.dataset_camera_tensors = []
+        for env_ptr, camera_handle in zip(self.envs, self.dataset_camera_handles):
+            camera_tensor = self.gym.get_camera_image_gpu_tensor(
+                self.sim,
+                env_ptr,
+                camera_handle,
+                gymapi.IMAGE_COLOR,
+            )
+            self.dataset_camera_tensors.append(gymtorch.wrap_tensor(camera_tensor))
+
+    def render_dataset_camera_rgb(self, env_ids: Optional[Tensor] = None) -> Tensor:
+        if not self.enable_dataset_cameras:
+            raise RuntimeError(
+                "Dataset cameras are disabled. Set task.env.enableDatasetCameras=True."
+            )
+        if not self.dataset_camera_tensors:
+            raise RuntimeError("Dataset camera tensors have not been initialized.")
+
+        if self.device != "cpu":
+            self.gym.fetch_results(self.sim, True)
+        self.gym.step_graphics(self.sim)
+        self.gym.render_all_camera_sensors(self.sim)
+        self.gym.start_access_image_tensors(self.sim)
+        try:
+            images = torch.stack(
+                [
+                    camera_tensor[..., :3].clone()
+                    for camera_tensor in self.dataset_camera_tensors
+                ],
+                dim=0,
+            )
+        finally:
+            self.gym.end_access_image_tensors(self.sim)
+
+        if env_ids is not None:
+            images = images[env_ids]
+        return images
 
     def _extra_reset_rules(self, resets):
         return resets
@@ -1453,6 +1537,8 @@ class SimToolReal(VecTask):
                     self.root_state_tensor[self.goal_object_indices[env_ids], 7:13]
                 )
             )
+            if not self.cfg["env"].get("showGoalObjectVisual", True):
+                self._hide_goal_object_visual(env_ids)
         if len(env_ids) > 0 and reset_buf_idxs is not None and tensor_reset:
             # TODO: Check if last 6 indices are 0
             rs_ofs = self.root_state_resets.shape[1]
@@ -1466,6 +1552,8 @@ class SimToolReal(VecTask):
             self.goal_states[env_ids, 0:7] = self.root_state_tensor[
                 self.goal_object_indices[env_ids], 0:7
             ]
+            if not self.cfg["env"].get("showGoalObjectVisual", True):
+                self._hide_goal_object_visual(env_ids)
 
         self.deferred_set_actor_root_state_tensor_indexed(
             [self.goal_object_indices[env_ids]]
@@ -1482,6 +1570,8 @@ class SimToolReal(VecTask):
             self.root_state_tensor[self.goal_object_indices[env_ids], 0:7] = (
                 self.goal_states[env_ids, 0:7]
             )
+            if not self.cfg["env"].get("showGoalObjectVisual", True):
+                self._hide_goal_object_visual(env_ids)
             self.deferred_set_actor_root_state_tensor_indexed(
                 [self.goal_object_indices]
             )
@@ -2148,6 +2238,9 @@ class SimToolReal(VecTask):
             )
 
             self.gym.end_aggregate(env_ptr)
+
+            if self.enable_dataset_cameras:
+                self._create_dataset_camera(env_ptr)
 
             self.envs.append(env_ptr)
             self.robots.append(robot_actor)

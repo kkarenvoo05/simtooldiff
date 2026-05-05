@@ -53,6 +53,7 @@ dependencies = [
     "viser",
     "pytorch-kinematics",
     "mujoco",
+    "zarr<3",
     "ruff",
     "tyro",
     "isaacgym-stubs",
