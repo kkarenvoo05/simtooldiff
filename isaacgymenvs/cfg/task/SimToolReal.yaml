@@ -15,6 +15,12 @@ env:
   enableCameraSensors: True  # Updated vec_task.py code to allow this to be True and still be fast, as long as enable_viewer_sync=False
                              # Thus, we can leave this on by default without sacrificing speed, just need to make sure that enable_viewer_sync=False
                              # And if we need to capture images, then we can set enable_viewer_sync=True
+  enableDatasetCameras: False
+  datasetCameraWidth: 224
+  datasetCameraHeight: 224
+  datasetCameraPosition: [0.45, -1.0, 0.95]
+  datasetCameraTarget: [0.0, 0.0, 0.55]
+  datasetCameraHorizontalFov: 70.0
   enableDebugVis: False
   evalStats: False  # extra evaluation-time statistics
 
@@ -107,6 +113,7 @@ env:
   useFixedInitObjectPose: False
   fixedGoalStates: null
   fixedGoalStatesJsonPath: null
+  showGoalObjectVisual: True
 
   use_hack_object_pos_offset: False
   hack_object_pos_offset: 0.05

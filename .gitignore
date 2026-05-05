@@ -219,3 +219,47 @@ wandb/
 
 # FoundationPose (separate repo)
 FoundationPose/
+
+# =========================
+# Data / rollouts
+# =========================
+data/
+*.zarr/
+*.zarr
+*.npz
+*.npy
+scripts/logs/
+
+# Images / videos
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+
+# Logs / summaries
+*.log
+*.json
+
+# =========================
+# Isaac Gym (VERY LARGE)
+# =========================
+isaacgym/
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+venv/
+
+# =========================
+# OS / editor junk
+# =========================
+.DS_Store
+.vscode/
+.idea/
