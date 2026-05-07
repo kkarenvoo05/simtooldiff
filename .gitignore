@@ -216,6 +216,7 @@ pretrained_policy/
 train_dir/
 runs/
 wandb/
+logs/
 
 # FoundationPose (separate repo)
 FoundationPose/

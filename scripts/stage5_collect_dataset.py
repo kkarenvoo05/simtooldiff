@@ -43,12 +43,15 @@ from numcodecs import Blosc
 
 N_OBS = 140
 N_ACT = 29
-DEFAULT_HORIZON = 150
+# Horizon needs headroom over the policy's worst-case rollout length on
+# randomized starts. At xy_range=0.10 we observed pickups completing in 124-167
+# steps (stage 4 horizon=250 sweep); 150 truncates ~half of them.
+DEFAULT_HORIZON = 250
 MIN_EPISODE_LEN = 30  # discard implausibly short episodes
 
-OBJECT_CATEGORY = "hammer"
-OBJECT_NAME = "claw_hammer"
-TASK_NAME = "swing_down"
+DEFAULT_OBJECT_CATEGORY = "hammer"
+DEFAULT_OBJECT_NAME = "claw_hammer"
+DEFAULT_TASK_NAME = "swing_down"
 
 CONFIG_PATH = Path("pretrained_policy/config.yaml")
 CHECKPOINT_PATH = Path("pretrained_policy/model.pth")
@@ -65,23 +68,25 @@ DATASET_CAMERA_POSITION = [0.55, -1.35, 1.10]
 DATASET_CAMERA_TARGET = [-0.1, 0.35, 0.60]
 DATASET_CAMERA_HORIZONTAL_FOV = 30.0
 DATASET_CAMERA_WIDTH = 512
-DATASET_CAMERA_HEIGHT = 360
+# Height divisible by 16 (and 32) so MP4 encoders don't pad and image encoders
+# with strided convs don't hit weird off-by-one shapes.
+DATASET_CAMERA_HEIGHT = 384
 
 
 def _jsonable(value):
     return OmegaConf.to_container(value, resolve=True) if OmegaConf.is_config(value) else value
 
 
-def _load_nominal_start_pose() -> List[float]:
+def _load_nominal_start_pose(category: str, name: str, task: str) -> List[float]:
     from isaacgymenvs.utils.utils import get_repo_root_dir
 
     trajectory_path = (
         get_repo_root_dir()
         / "dextoolbench"
         / "trajectories"
-        / OBJECT_CATEGORY
-        / OBJECT_NAME
-        / f"{TASK_NAME}.json"
+        / category
+        / name
+        / f"{task}.json"
     )
     assert trajectory_path.exists(), f"Missing trajectory: {trajectory_path}"
     with open(trajectory_path, "r") as f:
@@ -101,23 +106,28 @@ def _make_env(
     horizon: int,
     headless: bool,
     device: str,
+    seed: int,
+    object_name: str,
 ):
-    """Create env with in-env XY start randomization.
+    """Create env with the nominal start pose anchored.
 
-    Note: useFixedInitObjectPose=True still applies (so the nominal pose anchors
-    the reset distribution), and resetPositionNoiseX/Y add per-env uniform noise
-    on each reset.
+    XY randomization is NOT done via task.env.resetPositionNoiseX/Y: the env
+    short-circuits those when useFixedInitObjectPose=True (env.py:3491-3493
+    sets the per-reset random offsets to zero). We instead mutate
+    env.object_init_state[env_ids, 0:2] from the script before each reset; see
+    randomize_object_init_xy() in collect().
     """
     from deployment.isaac.isaac_env import create_env
 
     overrides = {
+        "seed": seed,
         "task.env.numEnvs": num_envs,
         "task.env.envSpacing": 0.4,
         "task.env.capture_video": False,
         # Cameras MUST be on; we read RGB from the dataset camera every step.
         "task.env.enableCameraSensors": True,
         "task.env.enableDatasetCameras": True,
-        "task.env.objectName": OBJECT_NAME,
+        "task.env.objectName": object_name,
         "task.env.useFixedGoalStates": True,
         "task.env.fixedGoalStates": [nominal_goal_pose],
         "task.env.showGoalObjectVisual": False,
@@ -126,9 +136,11 @@ def _make_env(
         "task.env.startArmHigher": True,
         "task.env.asset.table": TABLE_NAIL_URDF,
         "task.env.tableResetZ": TABLE_Z,
-        # >>> Per-reset XY randomization. This is the change vs. previous Stage 5.
-        "task.env.resetPositionNoiseX": float(xy_range),
-        "task.env.resetPositionNoiseY": float(xy_range),
+        # Env-side XY noise is a no-op when useFixedInitObjectPose=True (the env
+        # zeroes the random offsets). Set to 0 to make that explicit; actual
+        # randomization is applied by mutating env.object_init_state in collect().
+        "task.env.resetPositionNoiseX": 0.0,
+        "task.env.resetPositionNoiseY": 0.0,
         "task.env.resetPositionNoiseZ": 0.0,
         "task.env.randomizeObjectRotation": False,
         # Keep DOF/vel resets deterministic so the expert sees the distribution
@@ -202,6 +214,20 @@ def _open_or_create_zarr(path: Path, img_h: int, img_w: int, resume: bool):
             dtype="float32",
             compressor=small_compressor,
         )
+        data.create_dataset(
+            "object_id",
+            shape=(0,),
+            chunks=(8192,),
+            dtype="uint8",
+            compressor=small_compressor,
+        )
+        data.create_dataset(
+            "category_id",
+            shape=(0,),
+            chunks=(8192,),
+            dtype="uint8",
+            compressor=small_compressor,
+        )
         meta.create_dataset(
             "episode_ends",
             shape=(0,),
@@ -213,10 +239,19 @@ def _open_or_create_zarr(path: Path, img_h: int, img_w: int, resume: bool):
         assert data["img"].shape[1:] == (img_h, img_w, 3), data["img"].shape
         assert data["state"].shape[1] == N_OBS, data["state"].shape
         assert data["action"].shape[1] == N_ACT, data["action"].shape
+        # Backfill new columns when resuming an older zarr that lacks them.
+        if "object_id" not in data:
+            data.create_dataset(
+                "object_id", shape=(0,), chunks=(8192,),
+                dtype="uint8", compressor=small_compressor,
+            )
+        if "category_id" not in data:
+            data.create_dataset(
+                "category_id", shape=(0,), chunks=(8192,),
+                dtype="uint8", compressor=small_compressor,
+            )
 
-    root.attrs["schema"] = "diffusion_policy_image_dataset_v1"
-    root.attrs["object_name"] = OBJECT_NAME
-    root.attrs["task_name"] = TASK_NAME
+    root.attrs["schema"] = "diffusion_policy_image_dataset_v2"
     root.attrs["state_dim"] = N_OBS
     root.attrs["action_dim"] = N_ACT
     root.attrs["img_height"] = img_h
@@ -224,7 +259,14 @@ def _open_or_create_zarr(path: Path, img_h: int, img_w: int, resume: bool):
     return root
 
 
-def _append_episode(root, img: np.ndarray, state: np.ndarray, action: np.ndarray):
+def _append_episode(
+    root,
+    img: np.ndarray,
+    state: np.ndarray,
+    action: np.ndarray,
+    object_id: int,
+    category_id: int,
+):
     assert img.dtype == np.uint8
     assert state.dtype == np.float32
     assert action.dtype == np.float32
@@ -242,10 +284,13 @@ def _append_episode(root, img: np.ndarray, state: np.ndarray, action: np.ndarray
     data = root["data"]
     meta = root["meta"]
 
-    new_n = int(data["img"].shape[0]) + img.shape[0]
+    n = img.shape[0]
+    new_n = int(data["img"].shape[0]) + n
     data["img"].append(img, axis=0)
     data["state"].append(state, axis=0)
     data["action"].append(action, axis=0)
+    data["object_id"].append(np.full((n,), object_id, dtype=np.uint8), axis=0)
+    data["category_id"].append(np.full((n,), category_id, dtype=np.uint8), axis=0)
     meta["episode_ends"].append(np.asarray([new_n], dtype=np.int64), axis=0)
     return True
 
@@ -279,6 +324,9 @@ def collect(args: argparse.Namespace) -> None:
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
     root = _open_or_create_zarr(
         args.output_zarr,
         img_h=DATASET_CAMERA_HEIGHT,
@@ -289,12 +337,27 @@ def collect(args: argparse.Namespace) -> None:
     print(f"[stage5] output_zarr={args.output_zarr}", flush=True)
     print(f"[stage5] starting counts: transitions={n0}, episodes={e0}", flush=True)
     print(
+        f"[stage5] object={args.object_category}/{args.object_name} "
+        f"task={args.task_name} object_id={args.object_id} category_id={args.category_id}",
+        flush=True,
+    )
+    print(
         f"[stage5] num_envs={args.num_envs}, target_transitions={args.target_transitions}, "
         f"xy_range=+/-{args.xy_range:.3f}m",
         flush=True,
     )
 
-    nominal_start_pose = _load_nominal_start_pose()
+    # Persist the id->name mappings as we encounter new objects/categories.
+    object_registry = dict(root.attrs.get("object_id_to_name", {}))
+    category_registry = dict(root.attrs.get("category_id_to_name", {}))
+    object_registry[str(args.object_id)] = f"{args.object_category}/{args.object_name}"
+    category_registry[str(args.category_id)] = args.object_category
+    root.attrs["object_id_to_name"] = object_registry
+    root.attrs["category_id_to_name"] = category_registry
+
+    nominal_start_pose = _load_nominal_start_pose(
+        args.object_category, args.object_name, args.task_name
+    )
     nominal_goal_pose = list(nominal_start_pose)
     nominal_goal_pose[2] += LIFT_HEIGHT_M
     nominal_start_z = float(nominal_start_pose[2])
@@ -309,8 +372,36 @@ def collect(args: argparse.Namespace) -> None:
         horizon=args.horizon,
         headless=not args.viewer,
         device=device,
+        seed=args.seed,
+        object_name=args.object_name,
     )
     print("[debug] env created", flush=True)
+
+    # Anchor the per-env nominal init XY so randomization is always relative to
+    # the canonical start, not to the previous (already-randomized) reset.
+    nominal_init_xy = env.object_init_state[:, 0:2].detach().clone()
+
+    def randomize_object_init_xy(env_id_list: List[int]) -> None:
+        """Mutate env.object_init_state[env_ids, 0:2] in place, in [-xy_range, +xy_range]
+        relative to the per-env nominal anchor. Reads on next env reset."""
+        if not env_id_list:
+            return
+        env_ids = torch.tensor(env_id_list, device=env.object_init_state.device, dtype=torch.long)
+        deltas = (
+            torch.rand(
+                (len(env_id_list), 2),
+                device=env.object_init_state.device,
+                dtype=env.object_init_state.dtype,
+            )
+            * 2.0
+            - 1.0
+        ) * float(args.xy_range)
+        env.object_init_state[env_ids, 0:2] = nominal_init_xy[env_ids] + deltas
+
+    # Randomize for the very first reset, which fires inside the priming step
+    # below (vec_task initializes reset_buf to all-ones, so the first env.step
+    # auto-resets every env).
+    randomize_object_init_xy(list(range(env.num_envs)))
 
     env.gym.refresh_actor_root_state_tensor(env.sim)
     print(
@@ -346,9 +437,15 @@ def collect(args: argparse.Namespace) -> None:
     per_env_states:  List[List[np.ndarray]] = [[] for _ in range(env.num_envs)]
     per_env_actions: List[List[np.ndarray]] = [[] for _ in range(env.num_envs)]
     per_env_object_zs: List[List[float]] = [[] for _ in range(env.num_envs)]
-    # Track the actual start z each env resets to. Currently constant since
-    # resetPositionNoiseZ=0, but cheap to track and future-proof.
+    # Start Z per env. The auto-reset for env_i happens inside the env.step()
+    # AFTER done[i]=True is observed (in pre_physics_step), so we can only
+    # capture the post-reset start Z one iteration later — see just_reset below.
     per_env_start_z: List[float] = [nominal_start_z] * env.num_envs
+    # When True for env_i, the upcoming iteration's pre-step image/obs/action
+    # still reflect the just-finished episode's terminal (lifted) state — the
+    # reset hasn't physically happened yet. We skip those samples and instead
+    # capture per_env_start_z from object_pose AFTER env.step() applies the reset.
+    just_reset: List[bool] = [False] * env.num_envs
 
     attempted_episodes = 0
     written_episodes = 0
@@ -387,6 +484,10 @@ def collect(args: argparse.Namespace) -> None:
         action_np = action_t.detach().cpu().numpy().astype(np.float32)
 
         for env_i in range(env.num_envs):
+            if just_reset[env_i]:
+                # Pre-step samples this iteration belong to the prior (already
+                # harvested) episode's terminal state, not the new episode.
+                continue
             per_env_imgs[env_i].append(image_np[env_i])
             per_env_states[env_i].append(obs_np[env_i])
             per_env_actions[env_i].append(action_np[env_i])
@@ -396,6 +497,13 @@ def collect(args: argparse.Namespace) -> None:
 
         object_pose_np = env.object_pose[:, 0:7].detach().cpu().numpy()
         for env_i in range(env.num_envs):
+            if just_reset[env_i]:
+                # env.step() above ran the auto-reset for env_i; object_pose
+                # now reflects the new randomized start. Lock it in and resume
+                # data collection on subsequent iterations.
+                per_env_start_z[env_i] = float(object_pose_np[env_i, 2])
+                just_reset[env_i] = False
+                continue
             per_env_object_zs[env_i].append(float(object_pose_np[env_i, 2]))
 
         # Harvest any envs that finished this step.
@@ -421,7 +529,11 @@ def collect(args: argparse.Namespace) -> None:
                     state_ep = np.stack(per_env_states[env_i], axis=0).astype(np.float32)
                     action_ep = np.stack(per_env_actions[env_i], axis=0).astype(np.float32)
 
-                    appended = _append_episode(root, img_ep, state_ep, action_ep)
+                    appended = _append_episode(
+                        root, img_ep, state_ep, action_ep,
+                        object_id=args.object_id,
+                        category_id=args.category_id,
+                    )
                     if appended:
                         written_episodes += 1
                         if (
@@ -447,10 +559,16 @@ def collect(args: argparse.Namespace) -> None:
             per_env_states[env_i].clear()
             per_env_actions[env_i].clear()
             per_env_object_zs[env_i].clear()
-            # Update start_z from the post-reset object pose. After env.step()
-            # with done[i]=True, the env auto-resets and object_pose reflects
-            # the new randomized start.
-            per_env_start_z[env_i] = float(object_pose_np[env_i, 2])
+            # Defer start_z capture: the env hasn't been reset yet (object_pose
+            # here is still the lifted terminal pose). The next iteration's
+            # env.step() applies the reset; we capture start_z from its
+            # post-step object_pose.
+            just_reset[env_i] = True
+
+        # Randomize XY for every env that's about to reset on the next step.
+        # Done in one batched call so the RNG draw order is deterministic in
+        # env_id order, matching the seeded torch global RNG.
+        randomize_object_init_xy(done_indices.tolist())
 
         step_idx += 1
 
@@ -499,6 +617,14 @@ def collect(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--object-category", type=str, default=DEFAULT_OBJECT_CATEGORY)
+    parser.add_argument("--object-name", type=str, default=DEFAULT_OBJECT_NAME)
+    parser.add_argument("--task-name", type=str, default=DEFAULT_TASK_NAME,
+                        help="Trajectory file name; only its start_pose is read.")
+    parser.add_argument("--object-id", type=int, default=0,
+                        help="Stable id written into data/object_id.")
+    parser.add_argument("--category-id", type=int, default=0,
+                        help="Stable id written into data/category_id.")
     parser.add_argument("--num-envs", type=int, default=16)
     parser.add_argument("--target-transitions", type=int, default=50000)
     parser.add_argument(
