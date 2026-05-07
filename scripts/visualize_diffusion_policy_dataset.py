@@ -76,12 +76,12 @@ def main() -> None:
                 iio.imwrite(episode_dir / f"frame_{local_idx:04d}.png", image)
 
         if args.save_gif:
-            gif_path = args.output_dir / f"episode_{episode_idx:04d}.gif"
+            gif_path = episode_dir / f"episode_{episode_idx:04d}.gif"
             iio.imwrite(gif_path, episode_images, duration=1000 / args.fps, loop=0)
             log(f"Wrote {gif_path}")
 
         if args.save_mp4:
-            mp4_path = args.output_dir / f"episode_{episode_idx:04d}.mp4"
+            mp4_path = episode_dir / f"episode_{episode_idx:04d}.mp4"
             iio.imwrite(mp4_path, episode_images, fps=args.fps)
             log(f"Wrote {mp4_path}")
 
