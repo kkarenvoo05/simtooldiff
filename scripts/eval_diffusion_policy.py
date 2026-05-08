@@ -17,6 +17,7 @@ Usage (driver):
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -58,7 +59,13 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
         f"{spec.object_category}/{spec.object_name} task={spec.task_name}",
         flush=True,
     )
-    subprocess.run(cmd, check=True)
+    # IsaacGym's .so is linked against libpython3.8.so.1.0 which lives in
+    # $CONDA_PREFIX/lib. Inject it so worker subprocesses can resolve it.
+    env = os.environ.copy()
+    conda_lib = str(Path(sys.prefix) / "lib")
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = f"{conda_lib}:{existing}" if existing else conda_lib
+    subprocess.run(cmd, check=True, env=env)
     return json.loads(result_path.read_text())
 
 
@@ -146,6 +153,10 @@ def run_worker(args) -> None:
     import hydra
     from omegaconf import OmegaConf
 
+    # isaacgymenvs/__init__.py registers its own 'eval' resolver without
+    # replace=True; import it first, then override with replace=True so the
+    # two registrations don't collide.
+    import isaacgymenvs  # noqa: F401
     OmegaConf.register_new_resolver("eval", eval, replace=True)
 
     # Lean on stage5's env factory + success criterion + start-pose loader.
