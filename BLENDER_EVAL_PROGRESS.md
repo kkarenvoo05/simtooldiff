@@ -199,6 +199,71 @@ Result: PASS, saved `/tmp/smoke_render.png`, with the table box/nail, studio
 floor/backdrop, product lighting, and URDF robot colors visible. A short closed-loop
 preview was also generated at `/tmp/blender_product_scene_check/fail_00_attempt001.gif`.
 
+## Epoch 50 checkpoint video comparison
+
+The checkpoint Christine evaluated is the best A/B checkpoint because it already
+has reference IsaacGym results:
+
+```text
+/move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt
+```
+
+Reference result already present locally:
+
+```text
+/home/takaraet/Projects/cs224r/diffusion_eval/epoch0050_train.json
+overall: 244/288 = 84.7%
+```
+
+This laptop had only ~4.6 GiB free before cleanup, which was not enough for a
+4.1 GB checkpoint plus render videos. Package caches were cleaned, leaving
+~5.7 GiB free. That is enough for the checkpoint plus a short one-object video
+comparison, but not enough for broad video capture across the full 288 episodes.
+
+This session cannot SSH to `scdt.stanford.edu` non-interactively. Copy the
+checkpoint into the prepared local directory with:
+
+```bash
+scp scdt.stanford.edu:'/move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt' \
+  /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt
+```
+
+or use resumable copy:
+
+```bash
+rsync -avP scdt.stanford.edu:'/move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt' \
+  /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt
+```
+
+Then generate IsaacGym-vs-Blender videos for the default `claw_hammer` train
+object:
+
+```bash
+cd /home/takaraet/Projects/cs224r/simtooldiff
+./blender_eval/run_epoch0050_side_by_side.sh \
+  /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt
+```
+
+The script writes:
+
+```text
+/home/takaraet/Projects/cs224r/blender_eval_videos/epoch0050_side_by_side/
+  claw_hammer_<timestamp>/
+    isaacgym_claw_hammer.json
+    blender_cycles_claw_hammer.json
+    side_by_side_local_claw_hammer.gif
+    side_by_side_christine_claw_hammer.gif
+```
+
+For another object, override the object metadata before running, for example:
+
+```bash
+OBJ_CATEGORY=spatula OBJ_NAME=flat_spatula TASK_NAME=flip_over \
+OBJECT_ID=10 CATEGORY_ID=5 REF_ROOT=/home/takaraet/Projects/cs224r/diffusion_eval/epoch0050_ood_videos \
+./blender_eval/run_epoch0050_side_by_side.sh \
+  /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt
+```
+
 ## What's NOT done yet
 
 1. **A/B parity test** (`--renderer isaacgym` vs `eval_diffusion_policy.py`) -- needs a
