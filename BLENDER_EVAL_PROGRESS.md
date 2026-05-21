@@ -175,29 +175,40 @@ which is expected for the untrained checkpoint and is not a completion signal.
 The default Blender scene no longer requires hand-authoring a `.blend` file for
 IsaacGym-equivalent static context. `blender_render_script.py` procedurally builds:
 
-- the `table_narrow_nail.urdf` table as a 0.475 x 0.4 x 0.3 m wood-colored box
+- the `table_narrow_nail.urdf` table as a 0.475 x 0.4 x 0.3 m light-oak box
   centered at the IsaacGym table pose `(0, 0, 0.38)`;
-- the small gray nail box at the URDF offset `(-0.16, 0.06, 0.175)`;
-- a neutral matte studio floor and backdrop instead of a required checkerboard;
-- deterministic product-style Cycles lighting with broad area lights, softened
-  low-power spotlights, and conservative color management to avoid overexposure;
+- the small nail/block at the URDF offset `(-0.16, 0.06, 0.175)`, now with a
+  light marble material;
+- a neutral lab scene instead of a required checkerboard: matte concrete floor,
+  concrete back wall with beams, a rear workbench, and a visible overhead strip light;
+- deterministic Cycles lighting with a soft overhead rectangular area light, broad
+  key/fill/rim area lights, one low-power tool spotlight, constant seed, adaptive
+  sampling, no motion blur, no depth of field, and conservative AgX exposure;
 - URDF material colors for the robot meshes (KUKA orange/gray, Sharpa hand colors),
-  with PBR-ish roughness/specular/coat settings;
-- a procedural wood-like table material and beveled table/nail edges.
+  with PBR-ish roughness/specular/coat settings and clear-coated orange paint;
+- procedural light-oak, concrete, marble, dark fixture, and laminate materials with
+  subtle roughness/normal variation and beveled hard edges.
 
 A `.blend` template is now optional, not required for the bridge. Use one later only
-for more polished HDRI/PBR lighting or paper-quality material work.
+for custom HDRI assets or paper-specific art direction.
 
 Verified commands:
 
 ```bash
-PYTHONPATH=$PWD .venv/bin/python blender_eval/open_loop_smoke_test.py \
-  --blender /tmp/blender-4.2.9-linux-x64/blender
+PATH=$PWD/.venv/bin:$PATH \
+LD_LIBRARY_PATH=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"):$LD_LIBRARY_PATH \
+PYTHONPATH=$PWD \
+.venv/bin/python blender_eval/open_loop_smoke_test.py \
+  --blender /tmp/blender-4.2.9-linux-x64/blender \
+  --engine cycles --samples 16 --width 512 --height 384 \
+  --out /tmp/lab_lighting_smoke.png
 ```
 
-Result: PASS, saved `/tmp/smoke_render.png`, with the table box/nail, studio
-floor/backdrop, product lighting, and URDF robot colors visible. A short closed-loop
-preview was also generated at `/tmp/blender_product_scene_check/fail_00_attempt001.gif`.
+Result: PASS, saved `/tmp/lab_lighting_smoke.png` and copied a preview to
+`/home/takaraet/Projects/cs224r/blender_scene_previews/lab_cycles_lighting_preview.png`.
+The 512x384 smoke frame had 9,618 unique colors, mean pixel value 157.1, and visible
+lab wall/workbench, softened shadows, non-checker floor, light-oak table, and URDF
+robot colors.
 
 ## Epoch 50 checkpoint video comparison
 
@@ -269,10 +280,11 @@ OBJECT_ID=10 CATEGORY_ID=5 REF_ROOT=/home/takaraet/Projects/cs224r/diffusion_eva
 1. **A/B parity test** (`--renderer isaacgym` vs `eval_diffusion_policy.py`) -- needs a
    GPU-compatible machine (not Blackwell + Python 3.8). Still the critical gate before any
    closed-loop number is trusted.
-2. **Optional `.blend` scene polish** -- the default procedural scene now matches the
-   IsaacGym table geometry and now uses a neutral product-shoot floor/backdrop, area
-   lights, spotlights, and PBR-ish materials. A `.blend` template is only needed if we
-   want manual artistic polish for paper visuals.
+2. **Optional custom assets/HDRI pass** -- the default procedural scene now matches the
+   IsaacGym table geometry and uses a lab-style concrete wall/workbench, visible strip
+   light, Cycles area lighting, and PBR-ish materials. A `.blend` template is only
+   needed if we want manual artistic polish or external HDRI/PBR texture assets for
+   paper visuals.
 3. **Closed-loop render sanity check against a REAL rollout** -- replay ~10 frames of an
    already-collected rollout in Blender, eyeball the GIF. The open-loop smoke test validates the
    pipeline and axis conventions at zero pose, but a real articulated rollout (bent arm, grasping
@@ -411,9 +423,9 @@ The most likely cause is a subtle divergence in the eval loop. To debug:
 ### What comes after parity passes
 
 1. **Install Blender 4.x** (`apt install blender` or download portable build)
-2. **Optional scene polish** -- if the procedural table/floor/materials are not enough for
-   the paper, add a `.blend` template with HDRI lighting and PBR materials while preserving
-   the training camera geometry.
+2. **Optional custom scene assets** -- if the procedural lab scene is not enough for the
+   paper, add a `.blend` template or external HDRI/PBR textures while preserving the
+   training camera geometry.
 3. **Open-loop render sanity check** -- replay a known rollout in Blender, render
    ~10 frames, make a GIF, eyeball that hand+tool placement and camera framing
    match IsaacGym's viewer. This is where axis convention issues surface.

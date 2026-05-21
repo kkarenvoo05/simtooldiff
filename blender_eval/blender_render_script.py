@@ -3,8 +3,9 @@
 # VERIFIED to run end-to-end on Blender 4.2.9 LTS (headless, Cycles CPU) via
 # blender_eval/open_loop_smoke_test.py: imports all 36 robot STL meshes + the
 # tool OBJ, configures the camera, and renders a frame over the FIFO protocol.
-# Still UNVERIFIED against a real collected rollout (needs the cluster) and the
-# authored .blend scene template (HDRI/PBR lighting) does not exist yet.
+# Still UNVERIFIED against a real collected rollout (needs the cluster). The
+# default scene is scripted for parity testing; an optional .blend template can
+# still override lighting/materials if needed.
 #
 # Usage:
 #   blender --background --python blender_eval/blender_render_script.py -- \
@@ -33,6 +34,12 @@ import json
 import os
 import sys
 import tempfile
+
+USE_MOTION_BLUR = False
+USE_DOF = False
+CYCLES_SEED = 0
+CYCLES_ADAPTIVE_THRESHOLD = 0.008
+CYCLES_MIN_SAMPLES = 32
 
 # ---- Blender imports (only available inside blender --python) ----
 try:
@@ -111,6 +118,34 @@ def _set_principled_input(bsdf, names, value):
       return
 
 
+def _add_roughness_variation(mat, bsdf, roughness, variation, scale=42.0):
+  if variation <= 0 or "Roughness" not in bsdf.inputs:
+    return
+  nodes = mat.node_tree.nodes
+  links = mat.node_tree.links
+  noise = nodes.new(type="ShaderNodeTexNoise")
+  noise.inputs["Scale"].default_value = scale
+  noise.inputs["Detail"].default_value = 9.0
+  noise.inputs["Roughness"].default_value = 0.62
+  ramp = nodes.new(type="ShaderNodeValToRGB")
+  low = max(0.02, roughness - variation)
+  high = min(0.98, roughness + variation)
+  ramp.color_ramp.elements[0].position = 0.18
+  ramp.color_ramp.elements[0].color = (low, low, low, 1.0)
+  ramp.color_ramp.elements[1].position = 1.0
+  ramp.color_ramp.elements[1].color = (high, high, high, 1.0)
+  links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+  links.new(ramp.outputs["Color"], bsdf.inputs["Roughness"])
+
+
+def _add_shader_bevel(mat, bsdf, radius):
+  if radius <= 0 or "Normal" not in bsdf.inputs:
+    return
+  bevel = mat.node_tree.nodes.new(type="ShaderNodeBevel")
+  bevel.inputs["Radius"].default_value = radius
+  mat.node_tree.links.new(bevel.outputs["Normal"], bsdf.inputs["Normal"])
+
+
 def _make_material(
   name,
   rgba,
@@ -118,6 +153,8 @@ def _make_material(
   metallic=0.0,
   specular=0.5,
   coat=0.0,
+  roughness_variation=0.0,
+  bevel_radius=0.0,
 ):
   """Create or update a simple Principled material."""
   mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
@@ -129,18 +166,86 @@ def _make_material(
     _set_principled_input(bsdf, ("Metallic",), metallic)
     _set_principled_input(bsdf, ("Specular IOR Level", "Specular"), specular)
     _set_principled_input(bsdf, ("Coat Weight", "Clearcoat"), coat)
+    _add_roughness_variation(mat, bsdf, roughness, roughness_variation)
+    _add_shader_bevel(mat, bsdf, bevel_radius)
   return mat
 
 
 def _make_wood_material(name):
-  """Create a subtle procedural wood-like table material."""
+  """Create a procedural light-oak material with grain and normal variation."""
   mat = _make_material(
     name,
-    (0.70, 0.48, 0.30, 1.0),
-    roughness=0.74,
+    (0.66, 0.49, 0.30, 1.0),
+    roughness=0.58,
     metallic=0.0,
-    specular=0.25,
-    coat=0.03,
+    specular=0.36,
+    coat=0.08,
+    roughness_variation=0.12,
+  )
+  nodes = mat.node_tree.nodes
+  links = mat.node_tree.links
+  bsdf = nodes.get("Principled BSDF")
+  if bsdf:
+    noise = nodes.new(type="ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 22.0
+    noise.inputs["Detail"].default_value = 12.0
+    noise.inputs["Roughness"].default_value = 0.58
+    ramp = nodes.new(type="ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = 0.12
+    ramp.color_ramp.elements[0].color = (0.52, 0.36, 0.20, 1.0)
+    ramp.color_ramp.elements[1].position = 1.0
+    ramp.color_ramp.elements[1].color = (0.72, 0.54, 0.34, 1.0)
+    bump = nodes.new(type="ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.018
+    bump.inputs["Distance"].default_value = 0.006
+    links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+    links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+    if "Normal" in bsdf.inputs:
+      links.new(noise.outputs["Fac"], bump.inputs["Height"])
+      links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+  return mat
+
+
+def _make_concrete_material(name, base=(0.42, 0.43, 0.41, 1.0), roughness=0.86):
+  mat = _make_material(
+    name,
+    base,
+    roughness=roughness,
+    specular=0.18,
+    roughness_variation=0.08,
+  )
+  nodes = mat.node_tree.nodes
+  links = mat.node_tree.links
+  bsdf = nodes.get("Principled BSDF")
+  if bsdf:
+    noise = nodes.new(type="ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 26.0
+    noise.inputs["Detail"].default_value = 12.0
+    noise.inputs["Roughness"].default_value = 0.58
+    ramp = nodes.new(type="ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = 0.12
+    ramp.color_ramp.elements[0].color = (0.28, 0.29, 0.28, 1.0)
+    ramp.color_ramp.elements[1].position = 1.0
+    ramp.color_ramp.elements[1].color = base
+    bump = nodes.new(type="ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.030
+    bump.inputs["Distance"].default_value = 0.030
+    links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+    links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+    if "Normal" in bsdf.inputs:
+      links.new(noise.outputs["Fac"], bump.inputs["Height"])
+      links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+  return mat
+
+
+def _make_marble_material(name):
+  mat = _make_material(
+    name,
+    (0.78, 0.74, 0.66, 1.0),
+    roughness=0.26,
+    specular=0.46,
+    coat=0.10,
+    roughness_variation=0.06,
   )
   nodes = mat.node_tree.nodes
   links = mat.node_tree.links
@@ -148,21 +253,34 @@ def _make_wood_material(name):
   if bsdf:
     noise = nodes.new(type="ShaderNodeTexNoise")
     noise.inputs["Scale"].default_value = 18.0
-    noise.inputs["Detail"].default_value = 9.0
-    noise.inputs["Roughness"].default_value = 0.58
+    noise.inputs["Detail"].default_value = 15.0
+    noise.inputs["Roughness"].default_value = 0.64
     ramp = nodes.new(type="ShaderNodeValToRGB")
-    ramp.color_ramp.elements[0].position = 0.24
-    ramp.color_ramp.elements[0].color = (0.42, 0.28, 0.18, 1.0)
+    ramp.color_ramp.elements[0].position = 0.42
+    ramp.color_ramp.elements[0].color = (0.50, 0.47, 0.41, 1.0)
     ramp.color_ramp.elements[1].position = 1.0
-    ramp.color_ramp.elements[1].color = (0.68, 0.50, 0.34, 1.0)
+    ramp.color_ramp.elements[1].color = (0.88, 0.84, 0.76, 1.0)
     bump = nodes.new(type="ShaderNodeBump")
     bump.inputs["Strength"].default_value = 0.018
-    bump.inputs["Distance"].default_value = 0.025
+    bump.inputs["Distance"].default_value = 0.010
     links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
     if "Normal" in bsdf.inputs:
       links.new(noise.outputs["Fac"], bump.inputs["Height"])
       links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+  return mat
+
+
+def _make_emission_material(name, color, strength):
+  mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+  mat.use_nodes = True
+  nodes = mat.node_tree.nodes
+  nodes.clear()
+  emission = nodes.new(type="ShaderNodeEmission")
+  emission.inputs["Color"].default_value = color
+  emission.inputs["Strength"].default_value = strength
+  output = nodes.new(type="ShaderNodeOutputMaterial")
+  mat.node_tree.links.new(emission.outputs["Emission"], output.inputs["Surface"])
   return mat
 
 
@@ -172,20 +290,28 @@ def _robot_material(link_name, rgba):
     return _make_material(
       f"urdf_{link_name}_material",
       rgba,
-      roughness=0.48,
-      specular=0.42,
-      coat=0.06,
+      roughness=0.36,
+      specular=0.56,
+      coat=0.28,
+      roughness_variation=0.08,
+      bevel_radius=0.0012,
     )
   if link_name.startswith("iiwa14_link_") and max(rgba[:3]) < 0.45:
     return _make_material(
       f"urdf_{link_name}_material",
       rgba,
-      roughness=0.45,
-      metallic=0.35,
-      specular=0.38,
+      roughness=0.32,
+      metallic=0.70,
+      specular=0.54,
+      roughness_variation=0.10,
+      bevel_radius=0.0008,
     )
   return _make_material(
-    f"urdf_{link_name}_material", rgba, roughness=0.48, specular=0.45
+    f"urdf_{link_name}_material",
+    rgba,
+    roughness=0.50,
+    specular=0.42,
+    roughness_variation=0.06,
   )
 
 
@@ -204,11 +330,14 @@ def _shade_smooth(obj):
 
 
 def _add_bevel(obj, amount, segments=2):
-  bevel = obj.modifiers.new(name="softened_edges", type="BEVEL")
+  bevel = obj.modifiers.get("softened_edges") or obj.modifiers.new(
+    name="softened_edges", type="BEVEL"
+  )
   bevel.width = amount
   bevel.segments = segments
   bevel.affect = "EDGES"
-  obj.modifiers.new(name="weighted_normals", type="WEIGHTED_NORMAL")
+  if not obj.modifiers.get("weighted_normals"):
+    obj.modifiers.new(name="weighted_normals", type="WEIGHTED_NORMAL")
 
 
 def _look_at(obj, target):
@@ -216,12 +345,38 @@ def _look_at(obj, target):
   obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
 
-def _add_area_light(name, location, target, energy, size):
+def _add_cube(name, location, dimensions, mat=None, bevel=0.0, segments=2):
+  obj = bpy.data.objects.get(name)
+  if obj is None:
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=location)
+    obj = bpy.context.active_object
+    obj.name = name
+  else:
+    obj.location = location
+    bpy.ops.object.select_all(action='DESELECT')
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+  obj.dimensions = dimensions
+  bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+  if bevel > 0.0:
+    _add_bevel(obj, amount=bevel, segments=segments)
+  if mat:
+    _assign_material(obj, mat)
+  return obj
+
+
+def _add_area_light(name, location, target, energy, size, size_y=None):
   bpy.ops.object.light_add(type="AREA", location=location)
   light = bpy.context.active_object
   light.name = name
   light.data.energy = energy
-  light.data.size = size
+  if size_y is not None and hasattr(light.data, "shape"):
+    light.data.shape = "RECTANGLE"
+    light.data.size = size
+    if hasattr(light.data, "size_y"):
+      light.data.size_y = size_y
+  else:
+    light.data.size = size
   _look_at(light, target)
   return light
 
@@ -237,24 +392,77 @@ def _add_spot_light(name, location, target, energy, size, blend=0.65):
   return light
 
 
+def _add_lab_strip_light(target):
+  """Visible overhead fixture plus an actual rectangular emitter."""
+  housing_mat = _make_material(
+    "overhead_fixture_black", (0.015, 0.014, 0.012, 1.0), roughness=0.62, specular=0.25
+  )
+  diffuser_mat = _make_emission_material(
+    "overhead_diffuser_emission", (1.0, 0.95, 0.84, 1.0), strength=2.0
+  )
+  cable_mat = _make_material(
+    "fixture_cable_dark", (0.035, 0.035, 0.033, 1.0), roughness=0.72, specular=0.2
+  )
+
+  _add_cube(
+    "overhead_strip_housing",
+    location=(0.08, -0.24, 1.54),
+    dimensions=(1.25, 0.09, 0.045),
+    mat=housing_mat,
+    bevel=0.004,
+  )
+  _add_cube(
+    "overhead_strip_diffuser",
+    location=(0.08, -0.255, 1.515),
+    dimensions=(1.14, 0.018, 0.012),
+    mat=diffuser_mat,
+    bevel=0.003,
+  )
+  for x in (-0.42, 0.58):
+    _add_cube(
+      f"overhead_strip_cable_{x:.1f}",
+      location=(x, -0.24, 1.78),
+      dimensions=(0.012, 0.012, 0.48),
+      mat=cable_mat,
+      bevel=0.002,
+    )
+  _add_area_light(
+    "overhead_rect_key",
+    location=(0.08, -0.255, 1.49),
+    target=target,
+    energy=95.0,
+    size=1.20,
+    size_y=0.28,
+  )
+
+
 def _set_color_management(scene):
   """Prefer a product-render transform, falling back across Blender versions."""
-  available = {
+  transforms = {
     item.identifier
     for item in bpy.types.ColorManagedViewSettings.bl_rna.properties[
       "view_transform"
     ].enum_items
   }
-  if "AgX" in available:
+  if "AgX" in transforms:
     scene.view_settings.view_transform = "AgX"
-    scene.view_settings.look = "None"
-  elif "Filmic" in available:
+  elif "Filmic" in transforms:
     scene.view_settings.view_transform = "Filmic"
-    scene.view_settings.look = "None"
   else:
     scene.view_settings.view_transform = "Standard"
+
+  looks = {
+    item.identifier
+    for item in bpy.types.ColorManagedViewSettings.bl_rna.properties["look"].enum_items
+  }
+  if "Medium High Contrast" in looks:
+    scene.view_settings.look = "Medium High Contrast"
+  elif "AgX - Medium High Contrast" in looks:
+    scene.view_settings.look = "AgX - Medium High Contrast"
+  elif "None" in looks:
     scene.view_settings.look = "None"
-  scene.view_settings.exposure = -1.0
+
+  scene.view_settings.exposure = -1.15
   scene.view_settings.gamma = 1.0
 
 
@@ -297,45 +505,37 @@ def setup_scene(args):
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
-    # Product-style deterministic lighting: broad softboxes for shape, plus
-    # focused spots on the table/tool area. This is still reproducible and does
-    # not require a hand-authored .blend file.
+    # Lab/product lighting: deterministic, sharp policy-observation frames
+    # with no per-frame randomization, no DoF, and no motion blur.
     scene_center = (0.0, 0.05, 0.72)
+    _add_lab_strip_light(scene_center)
     _add_area_light(
       "key_softbox",
-      location=(-0.85, -1.05, 1.75),
+      location=(-1.15, -1.10, 1.55),
       target=scene_center,
-      energy=44.0,
-      size=2.15,
+      energy=42.0,
+      size=1.60,
     )
     _add_area_light(
       "fill_softbox",
-      location=(1.10, -0.55, 1.25),
+      location=(1.35, -0.70, 1.05),
       target=scene_center,
-      energy=18.0,
-      size=3.00,
+      energy=14.0,
+      size=2.70,
     )
     _add_area_light(
       "rim_softbox",
-      location=(0.15, 1.20, 1.50),
+      location=(0.35, 1.20, 1.35),
       target=(0.0, 0.10, 0.80),
-      energy=16.0,
-      size=1.50,
+      energy=14.0,
+      size=1.25,
     )
     _add_spot_light(
       "tool_spot",
-      location=(-0.45, -0.70, 1.35),
+      location=(-0.55, -0.95, 1.30),
       target=(-0.02, 0.04, 0.60),
-      energy=5.0,
-      size=1.15,
-      blend=0.85,
-    )
-    _add_spot_light(
-      "hand_spot",
-      location=(0.65, -0.95, 1.75),
-      target=(0.02, 0.02, 0.92),
-      energy=4.0,
-      size=1.05,
+      energy=1.4,
+      size=1.25,
       blend=0.85,
     )
 
@@ -345,22 +545,60 @@ def setup_scene(args):
     world.use_nodes = True
     bg = world.node_tree.nodes.get("Background")
     if bg:
-      bg.inputs["Color"].default_value = (0.025, 0.026, 0.028, 1.0)
-      bg.inputs["Strength"].default_value = 0.035
+      bg.inputs["Color"].default_value = (0.46, 0.47, 0.45, 1.0)
+      bg.inputs["Strength"].default_value = 0.07
 
   # Render engine
   if args.engine == "cycles":
     scene.render.engine = 'CYCLES'
     scene.cycles.samples = args.samples
     scene.cycles.use_denoising = True
-    # Use GPU if available
+    scene.cycles.seed = CYCLES_SEED
+    scene.cycles.max_bounces = 10
+    scene.cycles.diffuse_bounces = 5
+    scene.cycles.glossy_bounces = 6
+    scene.cycles.transmission_bounces = 8
+    scene.cycles.transparent_max_bounces = 8
+    scene.cycles.sample_clamp_indirect = 10.0
+    scene.cycles.blur_glossy = 0.35
+    if hasattr(scene.cycles, "use_adaptive_sampling"):
+      scene.cycles.use_adaptive_sampling = True
+    if hasattr(scene.cycles, "adaptive_threshold"):
+      scene.cycles.adaptive_threshold = CYCLES_ADAPTIVE_THRESHOLD
+    if hasattr(scene.cycles, "adaptive_min_samples"):
+      scene.cycles.adaptive_min_samples = max(1, min(args.samples, CYCLES_MIN_SAMPLES))
+    if hasattr(scene.cycles, "caustics_reflective"):
+      scene.cycles.caustics_reflective = True
+    if hasattr(scene.cycles, "caustics_refractive"):
+      scene.cycles.caustics_refractive = True
+
+    scene.render.use_persistent_data = True
+    scene.render.use_motion_blur = USE_MOTION_BLUR
+
+    # Prefer OptiX/CUDA on NVIDIA, but keep the script runnable on CPU-only hosts.
+    scene.cycles.device = 'CPU'
     prefs = bpy.context.preferences.addons.get('cycles')
     if prefs:
-      prefs.preferences.compute_device_type = 'CUDA'
-      for device in prefs.preferences.devices:
-        device.use = True
+      for compute_type in ("OPTIX", "CUDA"):
+        try:
+          prefs.preferences.compute_device_type = compute_type
+          prefs.preferences.get_devices()
+        except Exception:
+          continue
+        enabled = False
+        for device in prefs.preferences.devices:
+          device.use = device.type in {"OPTIX", "CUDA"}
+          enabled = enabled or device.use
+        if enabled:
+          scene.cycles.device = 'GPU'
+          try:
+            scene.cycles.denoiser = 'OPTIX'
+          except Exception:
+            pass
+          break
   else:
     scene.render.engine = _eevee_engine_name()
+    scene.render.use_motion_blur = USE_MOTION_BLUR
 
   # Resolution
   scene.render.resolution_x = args.width
@@ -372,53 +610,84 @@ def setup_scene(args):
   # IsaacGym scene furniture from assets/urdf/table_narrow_nail.urdf.
   # The table actor is centered at (0, 0, TABLE_Z); the URDF box is centered
   # on that actor with size 0.475 x 0.4 x 0.3, plus a small gray nail.
-  table_mat = _make_wood_material("table_wood")
-  nail_mat = _make_material(
-    "table_nail_grey", (0.5, 0.5, 0.5, 1.0), roughness=0.3, metallic=0.65
+  table_mat = _make_wood_material("table_light_oak")
+  nail_mat = _make_marble_material("table_nail_marble")
+  floor_mat = _make_concrete_material(
+    "lab_floor_matte", base=(0.49, 0.50, 0.47, 1.0), roughness=0.82
   )
-  if not bpy.data.objects.get("table"):
-    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.38))
-    table = bpy.context.active_object
-    table.name = "table"
-    table.dimensions = (0.475, 0.4, 0.3)
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    _add_bevel(table, amount=0.006, segments=3)
-    _assign_material(table, table_mat)
+  wall_mat = _make_concrete_material(
+    "lab_wall_concrete", base=(0.39, 0.40, 0.38, 1.0), roughness=0.88
+  )
+  beam_mat = _make_material(
+    "lab_wall_beam_dark", (0.17, 0.18, 0.17, 1.0), roughness=0.74, specular=0.20
+  )
+  bench_mat = _make_material(
+    "rear_bench_laminate", (0.62, 0.61, 0.56, 1.0), roughness=0.64, specular=0.28
+  )
+  bench_leg_mat = _make_material(
+    "rear_bench_frame", (0.12, 0.13, 0.13, 1.0), roughness=0.55, metallic=0.55
+  )
 
-  if not bpy.data.objects.get("table_nail"):
-    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(-0.16, 0.06, 0.38 + 0.175))
-    nail = bpy.context.active_object
-    nail.name = "table_nail"
-    nail.dimensions = (0.03, 0.03, 0.06)
-    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
-    _add_bevel(nail, amount=0.002, segments=2)
-    _assign_material(nail, nail_mat)
+  _add_cube(
+    "table",
+    location=(0.0, 0.0, 0.38),
+    dimensions=(0.475, 0.4, 0.3),
+    mat=table_mat,
+    bevel=0.010,
+    segments=4,
+  )
+  _add_cube(
+    "table_nail",
+    location=(-0.16, 0.06, 0.38 + 0.175),
+    dimensions=(0.03, 0.03, 0.06),
+    mat=nail_mat,
+    bevel=0.002,
+    segments=2,
+  )
 
-  # Neutral studio floor/backdrop. No checkerboard is required for evaluation;
-  # this keeps the rendered observation focused on the robot, tool, and table.
+  # A neutral lab scene replaces the old checkerboard/gradient placeholder.
   if not bpy.data.objects.get("floor"):
     bpy.ops.mesh.primitive_plane_add(size=8.0, location=(0.0, 0.0, 0.0))
     floor = bpy.context.active_object
     floor.name = "floor"
-    floor_mat = _make_material(
-      "studio_floor_matte", (0.48, 0.48, 0.46, 1.0), roughness=0.82, specular=0.25
-    )
     floor.data.materials.append(floor_mat)
 
-  if not bpy.data.objects.get("studio_backdrop"):
-    bpy.ops.mesh.primitive_plane_add(
-      size=4.0, location=(0.0, 1.45, 1.20), rotation=(1.57079632679, 0.0, 0.0)
+  _add_cube(
+    "concrete_back_wall",
+    location=(0.0, 1.58, 0.88),
+    dimensions=(3.2, 0.08, 1.76),
+    mat=wall_mat,
+  )
+  for x in (-1.08, 1.08):
+    _add_cube(
+      f"wall_vertical_beam_{x:.1f}",
+      location=(x, 1.52, 0.88),
+      dimensions=(0.055, 0.10, 1.78),
+      mat=beam_mat,
+      bevel=0.002,
     )
-    backdrop = bpy.context.active_object
-    backdrop.name = "studio_backdrop"
-    backdrop.data.materials.append(
-      _make_material(
-        "studio_backdrop_matte",
-        (0.30, 0.30, 0.30, 1.0),
-        roughness=0.9,
-        specular=0.18,
+  _add_cube(
+    "wall_mid_seam",
+    location=(0.0, 1.515, 0.88),
+    dimensions=(3.2, 0.10, 0.022),
+    mat=beam_mat,
+  )
+  _add_cube(
+    "rear_workbench_top",
+    location=(0.25, 0.92, 0.44),
+    dimensions=(1.65, 0.42, 0.055),
+    mat=bench_mat,
+    bevel=0.006,
+  )
+  for x in (-0.45, 0.95):
+    for y in (0.76, 1.08):
+      _add_cube(
+        f"rear_workbench_leg_{x:.1f}_{y:.1f}",
+        location=(x, y, 0.22),
+        dimensions=(0.035, 0.035, 0.42),
+        mat=bench_leg_mat,
+        bevel=0.002,
       )
-    )
 
   return scene
 
@@ -474,6 +743,7 @@ def setup_camera(camera_path: str, scene):
   cam_data.sensor_width = params["sensor_width_mm"]
   cam_data.sensor_height = params["sensor_height_mm"]
   cam_data.sensor_fit = 'HORIZONTAL'  # REQUIRED for HFOV match
+  cam_data.dof.use_dof = USE_DOF
 
   cam_obj = bpy.data.objects.new("EvalCamera", cam_data)
   bpy.context.collection.objects.link(cam_obj)
