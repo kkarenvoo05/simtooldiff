@@ -136,11 +136,11 @@ def _make_wood_material(name):
   """Create a subtle procedural wood-like table material."""
   mat = _make_material(
     name,
-    (0.76, 0.52, 0.30, 1.0),
-    roughness=0.58,
+    (0.70, 0.48, 0.30, 1.0),
+    roughness=0.74,
     metallic=0.0,
-    specular=0.45,
-    coat=0.12,
+    specular=0.25,
+    coat=0.03,
   )
   nodes = mat.node_tree.nodes
   links = mat.node_tree.links
@@ -152,12 +152,12 @@ def _make_wood_material(name):
     noise.inputs["Roughness"].default_value = 0.58
     ramp = nodes.new(type="ShaderNodeValToRGB")
     ramp.color_ramp.elements[0].position = 0.24
-    ramp.color_ramp.elements[0].color = (0.46, 0.28, 0.14, 1.0)
+    ramp.color_ramp.elements[0].color = (0.42, 0.28, 0.18, 1.0)
     ramp.color_ramp.elements[1].position = 1.0
-    ramp.color_ramp.elements[1].color = (0.74, 0.52, 0.30, 1.0)
+    ramp.color_ramp.elements[1].color = (0.68, 0.50, 0.34, 1.0)
     bump = nodes.new(type="ShaderNodeBump")
-    bump.inputs["Strength"].default_value = 0.035
-    bump.inputs["Distance"].default_value = 0.035
+    bump.inputs["Strength"].default_value = 0.018
+    bump.inputs["Distance"].default_value = 0.025
     links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
     links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
     if "Normal" in bsdf.inputs:
@@ -170,11 +170,19 @@ def _robot_material(link_name, rgba):
   """Choose PBR-ish params for URDF robot colors."""
   if link_name.startswith("iiwa14_link_") and rgba[0] > 0.9 and rgba[1] > 0.25:
     return _make_material(
-      f"urdf_{link_name}_material", rgba, roughness=0.28, specular=0.72, coat=0.25
+      f"urdf_{link_name}_material",
+      rgba,
+      roughness=0.48,
+      specular=0.42,
+      coat=0.06,
     )
   if link_name.startswith("iiwa14_link_") and max(rgba[:3]) < 0.45:
     return _make_material(
-      f"urdf_{link_name}_material", rgba, roughness=0.32, metallic=0.45, specular=0.55
+      f"urdf_{link_name}_material",
+      rgba,
+      roughness=0.45,
+      metallic=0.35,
+      specular=0.38,
     )
   return _make_material(
     f"urdf_{link_name}_material", rgba, roughness=0.48, specular=0.45
@@ -239,14 +247,14 @@ def _set_color_management(scene):
   }
   if "AgX" in available:
     scene.view_settings.view_transform = "AgX"
-    scene.view_settings.look = "Medium High Contrast"
+    scene.view_settings.look = "None"
   elif "Filmic" in available:
     scene.view_settings.view_transform = "Filmic"
-    scene.view_settings.look = "Medium High Contrast"
+    scene.view_settings.look = "None"
   else:
     scene.view_settings.view_transform = "Standard"
     scene.view_settings.look = "None"
-  scene.view_settings.exposure = -0.6
+  scene.view_settings.exposure = -1.0
   scene.view_settings.gamma = 1.0
 
 
@@ -297,36 +305,38 @@ def setup_scene(args):
       "key_softbox",
       location=(-0.85, -1.05, 1.75),
       target=scene_center,
-      energy=70.0,
-      size=1.25,
+      energy=44.0,
+      size=2.15,
     )
     _add_area_light(
       "fill_softbox",
       location=(1.10, -0.55, 1.25),
       target=scene_center,
-      energy=12.0,
-      size=2.25,
+      energy=18.0,
+      size=3.00,
     )
     _add_area_light(
       "rim_softbox",
       location=(0.15, 1.20, 1.50),
       target=(0.0, 0.10, 0.80),
-      energy=32.0,
-      size=0.75,
+      energy=16.0,
+      size=1.50,
     )
     _add_spot_light(
       "tool_spot",
       location=(-0.45, -0.70, 1.35),
       target=(-0.02, 0.04, 0.60),
-      energy=24.0,
-      size=0.72,
+      energy=5.0,
+      size=1.15,
+      blend=0.85,
     )
     _add_spot_light(
       "hand_spot",
       location=(0.65, -0.95, 1.75),
       target=(0.02, 0.02, 0.92),
-      energy=18.0,
-      size=0.62,
+      energy=4.0,
+      size=1.05,
+      blend=0.85,
     )
 
     # World background
@@ -336,7 +346,7 @@ def setup_scene(args):
     bg = world.node_tree.nodes.get("Background")
     if bg:
       bg.inputs["Color"].default_value = (0.025, 0.026, 0.028, 1.0)
-      bg.inputs["Strength"].default_value = 0.02
+      bg.inputs["Strength"].default_value = 0.035
 
   # Render engine
   if args.engine == "cycles":

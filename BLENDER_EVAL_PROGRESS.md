@@ -179,7 +179,8 @@ IsaacGym-equivalent static context. `blender_render_script.py` procedurally buil
   centered at the IsaacGym table pose `(0, 0, 0.38)`;
 - the small gray nail box at the URDF offset `(-0.16, 0.06, 0.175)`;
 - a neutral matte studio floor and backdrop instead of a required checkerboard;
-- deterministic product-style area lights plus focused spotlights;
+- deterministic product-style Cycles lighting with broad area lights, softened
+  low-power spotlights, and conservative color management to avoid overexposure;
 - URDF material colors for the robot meshes (KUKA orange/gray, Sharpa hand colors),
   with PBR-ish roughness/specular/coat settings;
 - a procedural wood-like table material and beveled table/nail edges.
