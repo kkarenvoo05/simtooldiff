@@ -73,6 +73,30 @@ Re-run it on any machine with Blender:
 python blender_eval/open_loop_smoke_test.py --blender /path/to/blender
 ```
 
+## Verified (IsaacGym + dataset camera)
+
+On the local RTX 4070 laptop, the real SimToolReal env now initializes through
+`scripts.stage5_collect_dataset._make_env` for `hammer/claw_hammer/swing_down` with
+`num_envs=2`, `headless=True`, and the source-of-truth dataset camera constants from
+`stage5_collect_dataset.py`. A zero-action step followed by
+`render_dataset_camera_rgb()` returned a CUDA `uint8` tensor with shape
+`(2, 384, 512, 3)` and nonzero image statistics (`min=1 max=255 mean=124.94`).
+
+Command shape:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH \
+LD_LIBRARY_PATH=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"):$LD_LIBRARY_PATH \
+.venv/bin/python - <<'PY'
+from scripts.stage5_collect_dataset import _load_nominal_start_pose, _make_env, LIFT_HEIGHT_M
+# build claw_hammer env, step zero action, call env.render_dataset_camera_rgb(...)
+PY
+```
+
+Notes from setup: direct `.venv/bin/python` invocations need the Python 3.8 libdir in
+`LD_LIBRARY_PATH`, and `PATH=$PWD/.venv/bin:$PATH` is needed so PyTorch can find the
+`ninja` binary when loading IsaacGym's `gymtorch` extension.
+
 ### Bugs fixed during verification
 
 1. **`--engine` plumbing** in `eval_blender.py`: the flag was read via `getattr` in the worker
