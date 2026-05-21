@@ -97,6 +97,63 @@ Notes from setup: direct `.venv/bin/python` invocations need the Python 3.8 libd
 `LD_LIBRARY_PATH`, and `PATH=$PWD/.venv/bin:$PATH` is needed so PyTorch can find the
 `ninja` binary when loading IsaacGym's `gymtorch` extension.
 
+## Verified (tiny closed loop, untrained policy)
+
+The local laptop now runs the closed loop end-to-end at tiny scale with IsaacGym
+physics, a loadable untrained diffusion-policy checkpoint, and Blender Cycles rendering.
+The checkpoint used for smoke verification was created at `/tmp/untrained_simtool_tiny.ckpt`
+from `train_diffusion_unet_simtool_workspace.yaml` with `task.state_dim=29`,
+`task.image_shape=[3,192,256]`, a synthetic normalizer, tiny U-Net dimensions
+(`policy.down_dims=[64,128,256]`, `policy.diffusion_step_embed_dim=64`), and
+`policy.num_inference_steps=4`. It is not trained and must not be used for success-rate
+claims; it only proves the execution path.
+
+Diffusion-policy import setup kept the IsaacGym torch install intact (`torch==2.4.1+cu121`)
+by installing only thin packages with `--no-deps`: `diffusers==0.11.1`,
+`robomimic==0.2.0`, `einops`, `egl_probe`, `huggingface_hub==0.13.4`, plus missing
+workspace import helpers (`dill`, `pandas`, `pytz`). `PYTHONPATH` must include both
+the diffusion-policy fork and this repo root:
+
+```bash
+PYTHONPATH=/home/takaraet/Projects/cs224r/diffusion-policy:$PWD
+```
+
+Stub renderer verification:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH \
+LD_LIBRARY_PATH=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"):$LD_LIBRARY_PATH \
+PYTHONPATH=/home/takaraet/Projects/cs224r/diffusion-policy:$PWD \
+.venv/bin/python blender_eval/eval_blender.py --worker \
+  --checkpoint /tmp/untrained_simtool_tiny.ckpt \
+  --renderer stub \
+  --object-category hammer --object-name claw_hammer --task-name swing_down \
+  --num-envs 2 --episodes-per-object 1 --horizon 60 \
+  --result-json /tmp/r.json
+```
+
+Result: exited `0`, wrote `/tmp/r.json`, `attempted=1`, `renderer="stub"`.
+
+Blender bridge verification:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH \
+LD_LIBRARY_PATH=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"):$LD_LIBRARY_PATH \
+PYTHONPATH=/home/takaraet/Projects/cs224r/diffusion-policy:$PWD \
+.venv/bin/python blender_eval/eval_blender.py --worker \
+  --checkpoint /tmp/untrained_simtool_tiny.ckpt \
+  --renderer blender --engine cycles --samples 8 \
+  --blender /tmp/blender-4.2.9-linux-x64/blender \
+  --object-category hammer --object-name claw_hammer --task-name swing_down \
+  --num-envs 2 --episodes-per-object 1 --horizon 60 \
+  --result-json /tmp/r_blender.json
+```
+
+Result: exited `0`, imported the 36 robot meshes and claw-hammer texture in Blender,
+advanced the policy/action/render loop to episode termination, and wrote
+`/tmp/r_blender.json` with `attempted=1`, `renderer="blender"`. Success rate was `0.0`,
+which is expected for the untrained checkpoint and is not a completion signal.
+
 ### Bugs fixed during verification
 
 1. **`--engine` plumbing** in `eval_blender.py`: the flag was read via `getattr` in the worker
@@ -108,6 +165,10 @@ Notes from setup: direct `.venv/bin/python` invocations need the Python 3.8 libd
    the imported object by set-difference (not fragile `selected_objects[-1]`), and picks the
    EEVEE engine name valid for the running version. Robot meshes are STL, so this was on the
    critical path.
+3. **`--blender` executable plumbing** in `eval_blender.py`: `BlenderRenderer` already supported
+   a custom executable path, but the CLI did not expose or forward it. The worker and driver now
+   accept `--blender`, allowing the verified portable Blender 4.2.9 binary under `/tmp` to be
+   used directly.
 
 ## What's NOT done yet
 

@@ -59,7 +59,11 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
   if args.render_height is not None:
     cmd += ["--render-height", str(args.render_height)]
   if args.renderer == "blender":
-    cmd += ["--engine", args.engine, "--samples", str(args.samples)]
+    cmd += [
+      "--engine", args.engine,
+      "--samples", str(args.samples),
+      "--blender", args.blender,
+    ]
   if args.video_dir is not None:
     cmd += ["--video-dir", str(args.video_dir / spec.object_name)]
 
@@ -274,6 +278,7 @@ def run_worker(args) -> None:
       tool_mesh_path=tool_mesh_path,
       engine=args.engine,
       samples=args.samples,
+      blender_executable=args.blender,
     )
   else:
     raise ValueError(f"Unknown renderer: {args.renderer}")
@@ -454,6 +459,8 @@ def parse_args() -> argparse.Namespace:
                  help="Blender render engine (only used with --renderer blender)")
   p.add_argument("--samples", type=int, default=64,
                  help="Cycles render samples (only used with --renderer blender)")
+  p.add_argument("--blender", default="blender",
+                 help="Path to Blender executable (only used with --renderer blender)")
   p.add_argument("--split", choices=("train", "ood"), default="train")
   p.add_argument("--episodes-per-object", type=int, default=32)
   p.add_argument("--num-envs", type=int, default=8)
