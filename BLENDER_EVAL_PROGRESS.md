@@ -178,9 +178,11 @@ IsaacGym-equivalent static context. `blender_render_script.py` procedurally buil
 - the `table_narrow_nail.urdf` table as a 0.475 x 0.4 x 0.3 m wood-colored box
   centered at the IsaacGym table pose `(0, 0, 0.38)`;
 - the small gray nail box at the URDF offset `(-0.16, 0.06, 0.175)`;
-- a gray checker floor approximating the IsaacGym viewer background;
-- deterministic sun + area lighting with Standard color management;
-- URDF material colors for the robot meshes (KUKA orange/gray, Sharpa hand colors).
+- a neutral matte studio floor and backdrop instead of a required checkerboard;
+- deterministic product-style area lights plus focused spotlights;
+- URDF material colors for the robot meshes (KUKA orange/gray, Sharpa hand colors),
+  with PBR-ish roughness/specular/coat settings;
+- a procedural wood-like table material and beveled table/nail edges.
 
 A `.blend` template is now optional, not required for the bridge. Use one later only
 for more polished HDRI/PBR lighting or paper-quality material work.
@@ -192,9 +194,9 @@ PYTHONPATH=$PWD .venv/bin/python blender_eval/open_loop_smoke_test.py \
   --blender /tmp/blender-4.2.9-linux-x64/blender
 ```
 
-Result: PASS, saved `/tmp/smoke_render.png`, with the table box/nail, floor, and
-URDF robot colors visible. A short closed-loop preview was also generated at
-`/tmp/blender_scene_check/fail_00_attempt001.gif`.
+Result: PASS, saved `/tmp/smoke_render.png`, with the table box/nail, studio
+floor/backdrop, product lighting, and URDF robot colors visible. A short closed-loop
+preview was also generated at `/tmp/blender_product_scene_check/fail_00_attempt001.gif`.
 
 ## What's NOT done yet
 
@@ -202,8 +204,9 @@ URDF robot colors visible. A short closed-loop preview was also generated at
    GPU-compatible machine (not Blackwell + Python 3.8). Still the critical gate before any
    closed-loop number is trusted.
 2. **Optional `.blend` scene polish** -- the default procedural scene now matches the
-   IsaacGym table/floor/URDF colors well enough for debugging and first evaluations. A
-   `.blend` template is only needed if we want HDRI/PBR material polish for paper visuals.
+   IsaacGym table geometry and now uses a neutral product-shoot floor/backdrop, area
+   lights, spotlights, and PBR-ish materials. A `.blend` template is only needed if we
+   want manual artistic polish for paper visuals.
 3. **Closed-loop render sanity check against a REAL rollout** -- replay ~10 frames of an
    already-collected rollout in Blender, eyeball the GIF. The open-loop smoke test validates the
    pipeline and axis conventions at zero pose, but a real articulated rollout (bent arm, grasping
