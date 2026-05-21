@@ -275,8 +275,9 @@ def run_worker(args) -> None:
   else:
     raise ValueError(f"Unknown renderer: {args.renderer}")
 
-  if mesh_manifest is None and args.renderer not in ("isaacgym",):
-    mesh_manifest = get_robot_mesh_manifest()
+  # mesh_manifest is only needed for renderers that use pose state (blender).
+  # stub and isaacgym renderers ignore it — keep it None to avoid unnecessary
+  # state extraction overhead and body-name dependency in stub mode.
 
   # --- Prime obs ---
   zero_action = torch.zeros((env.num_envs, N_ACT), device=device)
