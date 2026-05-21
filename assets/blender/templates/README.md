@@ -7,11 +7,21 @@ photorealistic policy evaluation.
 
 You may edit these in Blender and save the `.blend`:
 
-- World/HDRI environment.
-- Static area lights, spotlights, visible fixtures, and light strengths.
+- World/HDRI environment. The HDRI should stay hidden from camera rays and
+  should act as low-strength ambient fill/reflection only.
+- `Key` and `Fill` static area lights.
 - Static background furniture, walls, floor, rear bench, and non-physics props.
 - Static scene materials for the table, floor, block, bench, walls, and lights.
 - Procedural/static material node graphs for objects already in the template.
+
+The intended lighting design is deliberately simple:
+
+- `Key`: rectangular area light, roughly 0.5 m x 0.35 m, high/front/side,
+  dominant energy. This is the light that casts the readable shadow.
+- `Fill`: large, weak area light on the opposite side, about 1/5 to 1/6 of the
+  key strength. This lifts shadow cores without flattening the image.
+- HDRI: strength around 0.25 to 0.3, hidden from camera. It should contribute ambient
+  color and reflections but not become the visible background or dominant light.
 
 ## What Runtime Owns
 
@@ -37,6 +47,8 @@ intend to change the evaluation visual contract:
 - `table_nail`: must stay at `(-0.16, 0.06, 0.555)` with dimensions
   `(0.03, 0.03, 0.06)`.
 - `floor`: must exist as the static floor/shadow receiver.
+- `clean_back_wall`: the clean visible background. You may change its material,
+  but keep a physical background object if the HDRI stays hidden from camera.
 
 The renderer validates these names when `--blend-file` is used and warns if the
 locations or dimensions drift from the IsaacGym visual contract.

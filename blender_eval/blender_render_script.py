@@ -419,7 +419,7 @@ def _make_emission_material(name, color, strength):
   return mat
 
 
-def _setup_world_hdri(hdri_path, strength=1.0):
+def _setup_world_hdri(hdri_path, strength=1.0, visible_to_camera=True):
   world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
   bpy.context.scene.world = world
   world.use_nodes = True
@@ -439,6 +439,8 @@ def _setup_world_hdri(hdri_path, strength=1.0):
     background.inputs["Color"].default_value = (0.46, 0.47, 0.45, 1.0)
 
   links.new(background.outputs["Background"], output.inputs["Surface"])
+  if hasattr(world, "cycles_visibility"):
+    world.cycles_visibility.camera = visible_to_camera
   return world
 
 
@@ -537,6 +539,12 @@ def _print_render_diagnostics(scene, robot_objects, tool_object):
       file=sys.stderr,
       flush=True,
     )
+    if hasattr(world, "cycles_visibility"):
+      print(
+        f"DIAG_WORLD_CAMERA_VISIBLE {world.cycles_visibility.camera}",
+        file=sys.stderr,
+        flush=True,
+      )
     if world.use_nodes and world.node_tree:
       nodes = [(n.name, n.type) for n in world.node_tree.nodes]
       links = [
@@ -766,6 +774,26 @@ def _add_lab_strip_light(target):
   )
 
 
+def _setup_clean_eval_lighting(target=(0.0, 0.0, 0.45)):
+  """One dominant key plus weak fill for clearer, stable Cycles shadows."""
+  target = mathutils.Vector(target)
+  _add_area_light(
+    "Key",
+    location=(0.80, -0.90, 1.60),
+    target=target,
+    energy=145.0,
+    size=0.52,
+    size_y=0.34,
+  )
+  _add_area_light(
+    "Fill",
+    location=(-1.20, -0.50, 1.00),
+    target=target,
+    energy=22.0,
+    size=2.00,
+  )
+
+
 def _set_color_management(scene):
   """Prefer a product-render transform, falling back across Blender versions."""
   transforms = {
@@ -792,7 +820,7 @@ def _set_color_management(scene):
   elif "None" in looks:
     scene.view_settings.look = "None"
 
-  scene.view_settings.exposure = -0.90
+  scene.view_settings.exposure = -1.20
   scene.view_settings.gamma = 1.0
 
 
@@ -805,6 +833,9 @@ def _add_default_static_scene():
   nail_mat = _make_marble_material("table_nail_marble")
   floor_mat = _make_concrete_material(
     "lab_floor_matte", base=(0.49, 0.50, 0.47, 1.0), roughness=0.82
+  )
+  wall_mat = _make_concrete_material(
+    "clean_back_wall_matte", base=(0.47, 0.48, 0.46, 1.0), roughness=0.88
   )
   bench_mat = _make_material(
     "rear_bench_laminate", (0.62, 0.61, 0.56, 1.0), roughness=0.64, specular=0.28
@@ -837,6 +868,13 @@ def _add_default_static_scene():
     floor.name = "floor"
     floor.data.materials.append(floor_mat)
 
+  _add_cube(
+    "clean_back_wall",
+    location=(0.0, 1.42, 0.82),
+    dimensions=(4.50, 0.055, 1.75),
+    mat=wall_mat,
+    bevel=0.0,
+  )
   _add_cube(
     "rear_workbench_top",
     location=(0.25, 0.92, 0.44),
@@ -970,42 +1008,10 @@ def setup_scene(args):
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
-    # Lab/product lighting: deterministic, sharp policy-observation frames
-    # with no per-frame randomization, no DoF, and no motion blur.
-    scene_center = (0.0, 0.05, 0.72)
-    _add_lab_strip_light(scene_center)
-    _add_area_light(
-      "key_softbox",
-      location=(-1.15, -1.10, 1.55),
-      target=scene_center,
-      energy=28.0,
-      size=1.55,
-    )
-    _add_area_light(
-      "fill_softbox",
-      location=(1.35, -0.70, 1.05),
-      target=scene_center,
-      energy=2.5,
-      size=3.00,
-    )
-    _add_area_light(
-      "rim_softbox",
-      location=(0.35, 1.20, 1.35),
-      target=(0.0, 0.10, 0.80),
-      energy=11.0,
-      size=1.25,
-    )
-    _add_spot_light(
-      "tool_spot",
-      location=(-0.55, -0.95, 1.30),
-      target=(-0.02, 0.04, 0.60),
-      energy=0.35,
-      size=1.25,
-      blend=0.85,
-    )
-
-    # World background
-    _setup_world_hdri(_resolve_hdri_path(), strength=1.0)
+    # The HDRI provides low-strength ambient fill/reflections only. A clean
+    # physical wall is visible to the policy camera instead of the busy HDRI.
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.28, visible_to_camera=False)
+    _setup_clean_eval_lighting()
 
   # Render engine
   if args.engine == "cycles":
@@ -1033,6 +1039,7 @@ def setup_scene(args):
 
     scene.render.use_persistent_data = True
     scene.render.use_motion_blur = USE_MOTION_BLUR
+    scene.render.film_transparent = False
 
     # Prefer OptiX/CUDA on NVIDIA unless CPU is explicitly requested. CPU is
     # useful on 8 GB GPUs when policy + IsaacGym already consume most VRAM.

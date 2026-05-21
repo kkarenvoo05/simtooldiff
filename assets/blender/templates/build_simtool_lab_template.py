@@ -54,7 +54,7 @@ def main():
     cycles_device="auto",
   )
   scene = render_script.setup_scene(scene_args)
-  scene["simtooldiff_template_contract"] = "static_scene_v1"
+  scene["simtooldiff_template_contract"] = "static_scene_v2_clean_key_fill"
   scene["simtooldiff_runtime_owns"] = (
     "EvalCamera, render settings, robot link meshes, tool mesh, all moving poses"
   )
