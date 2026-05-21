@@ -31,15 +31,21 @@ pose updates from stdin and writing rendered image paths to stdout.
 """
 
 import json
+import math
 import os
 import sys
 import tempfile
 
+SIMTOOLDIFF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_HDRI_PATH = os.path.join(
+  SIMTOOLDIFF_ROOT, "assets", "blender", "hdri", "workshop_1k.hdr"
+)
 USE_MOTION_BLUR = False
 USE_DOF = False
 CYCLES_SEED = 0
 CYCLES_ADAPTIVE_THRESHOLD = 0.008
 CYCLES_MIN_SAMPLES = 32
+_DIAGNOSTICS_PRINTED = False
 
 # ---- Blender imports (only available inside blender --python) ----
 try:
@@ -118,6 +124,43 @@ def _set_principled_input(bsdf, names, value):
       return
 
 
+def _get_principled_bsdf(mat):
+  if not mat or not mat.use_nodes:
+    return None
+  for node in mat.node_tree.nodes:
+    if node.type == "BSDF_PRINCIPLED":
+      return node
+  return mat.node_tree.nodes.get("Principled BSDF")
+
+
+def _asset_path(*parts):
+  return os.path.join(SIMTOOLDIFF_ROOT, "assets", "blender", *parts)
+
+
+def _load_image(path, *, colorspace=None):
+  image = bpy.data.images.get(os.path.basename(path))
+  if image is None:
+    image = bpy.data.images.load(path)
+  if colorspace:
+    try:
+      image.colorspace_settings.name = colorspace
+    except TypeError:
+      pass
+  return image
+
+
+def _resolve_hdri_path():
+  override = os.environ.get("SIMTOOLDIFF_HDRI_PATH")
+  if override:
+    if os.path.exists(override):
+      return override
+    print(f"WARNING: SIMTOOLDIFF_HDRI_PATH does not exist: {override}", file=sys.stderr)
+  if os.path.exists(DEFAULT_HDRI_PATH):
+    return DEFAULT_HDRI_PATH
+  print(f"WARNING: default HDRI not found: {DEFAULT_HDRI_PATH}", file=sys.stderr)
+  return None
+
+
 def _add_roughness_variation(mat, bsdf, roughness, variation, scale=42.0):
   if variation <= 0 or "Roughness" not in bsdf.inputs:
     return
@@ -171,8 +214,84 @@ def _make_material(
   return mat
 
 
+def _make_textured_pbr_material(
+  name,
+  diffuse_path,
+  roughness_path,
+  normal_path,
+  *,
+  roughness=0.5,
+  specular=0.35,
+  coat=0.0,
+  normal_strength=0.10,
+  texture_scale=(1.0, 1.0, 1.0),
+):
+  """Create a PBR material from image maps, falling back to scalar inputs."""
+  mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+  mat.use_nodes = True
+  nodes = mat.node_tree.nodes
+  links = mat.node_tree.links
+  nodes.clear()
+
+  output = nodes.new(type="ShaderNodeOutputMaterial")
+  bsdf = nodes.new(type="ShaderNodeBsdfPrincipled")
+  links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+  _set_principled_input(bsdf, ("Metallic",), 0.0)
+  _set_principled_input(bsdf, ("Roughness",), roughness)
+  _set_principled_input(bsdf, ("Specular IOR Level", "Specular"), specular)
+  _set_principled_input(bsdf, ("Coat Weight", "Clearcoat"), coat)
+
+  texcoord = nodes.new(type="ShaderNodeTexCoord")
+  mapping = nodes.new(type="ShaderNodeMapping")
+  if "Scale" in mapping.inputs:
+    mapping.inputs["Scale"].default_value = texture_scale
+  links.new(texcoord.outputs["Generated"], mapping.inputs["Vector"])
+
+  if diffuse_path and os.path.exists(diffuse_path):
+    diffuse = nodes.new(type="ShaderNodeTexImage")
+    diffuse.image = _load_image(diffuse_path, colorspace="sRGB")
+    diffuse.extension = "REPEAT"
+    links.new(mapping.outputs["Vector"], diffuse.inputs["Vector"])
+    links.new(diffuse.outputs["Color"], bsdf.inputs["Base Color"])
+
+  if roughness_path and os.path.exists(roughness_path) and "Roughness" in bsdf.inputs:
+    rough = nodes.new(type="ShaderNodeTexImage")
+    rough.image = _load_image(roughness_path, colorspace="Non-Color")
+    rough.extension = "REPEAT"
+    links.new(mapping.outputs["Vector"], rough.inputs["Vector"])
+    links.new(rough.outputs["Color"], bsdf.inputs["Roughness"])
+
+  if normal_path and os.path.exists(normal_path) and "Normal" in bsdf.inputs:
+    normal_tex = nodes.new(type="ShaderNodeTexImage")
+    normal_tex.image = _load_image(normal_path, colorspace="Non-Color")
+    normal_tex.extension = "REPEAT"
+    normal_map = nodes.new(type="ShaderNodeNormalMap")
+    normal_map.inputs["Strength"].default_value = normal_strength
+    links.new(mapping.outputs["Vector"], normal_tex.inputs["Vector"])
+    links.new(normal_tex.outputs["Color"], normal_map.inputs["Color"])
+    links.new(normal_map.outputs["Normal"], bsdf.inputs["Normal"])
+
+  return mat
+
+
 def _make_wood_material(name):
   """Create a procedural light-oak material with grain and normal variation."""
+  diffuse_path = _asset_path("textures", "oak_veneer_01", "oak_veneer_01_diff_1k.jpg")
+  roughness_path = _asset_path("textures", "oak_veneer_01", "oak_veneer_01_rough_1k.jpg")
+  normal_path = _asset_path("textures", "oak_veneer_01", "oak_veneer_01_nor_gl_1k.jpg")
+  if os.path.exists(diffuse_path) and os.path.exists(roughness_path) and os.path.exists(normal_path):
+    return _make_textured_pbr_material(
+      name,
+      diffuse_path,
+      roughness_path,
+      normal_path,
+      roughness=0.52,
+      specular=0.30,
+      coat=0.04,
+      normal_strength=0.16,
+      texture_scale=(1.5, 1.5, 1.0),
+    )
+
   mat = _make_material(
     name,
     (0.60, 0.44, 0.27, 1.0),
@@ -239,6 +358,22 @@ def _make_concrete_material(name, base=(0.42, 0.43, 0.41, 1.0), roughness=0.86):
 
 
 def _make_marble_material(name):
+  diffuse_path = _asset_path("textures", "marble_01", "marble_01_diff_1k.jpg")
+  roughness_path = _asset_path("textures", "marble_01", "marble_01_rough_1k.jpg")
+  normal_path = _asset_path("textures", "marble_01", "marble_01_nor_gl_1k.jpg")
+  if os.path.exists(diffuse_path) and os.path.exists(roughness_path) and os.path.exists(normal_path):
+    return _make_textured_pbr_material(
+      name,
+      diffuse_path,
+      roughness_path,
+      normal_path,
+      roughness=0.22,
+      specular=0.48,
+      coat=0.12,
+      normal_strength=0.09,
+      texture_scale=(1.0, 1.0, 1.0),
+    )
+
   mat = _make_material(
     name,
     (0.78, 0.74, 0.66, 1.0),
@@ -284,6 +419,166 @@ def _make_emission_material(name, color, strength):
   return mat
 
 
+def _setup_world_hdri(hdri_path, strength=1.0):
+  world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
+  bpy.context.scene.world = world
+  world.use_nodes = True
+  nodes = world.node_tree.nodes
+  links = world.node_tree.links
+  nodes.clear()
+
+  output = nodes.new(type="ShaderNodeOutputWorld")
+  background = nodes.new(type="ShaderNodeBackground")
+  background.inputs["Strength"].default_value = strength
+
+  if hdri_path and os.path.exists(hdri_path):
+    env = nodes.new(type="ShaderNodeTexEnvironment")
+    env.image = _load_image(hdri_path, colorspace="Linear Rec.709")
+    links.new(env.outputs["Color"], background.inputs["Color"])
+  else:
+    background.inputs["Color"].default_value = (0.46, 0.47, 0.45, 1.0)
+
+  links.new(background.outputs["Background"], output.inputs["Surface"])
+  return world
+
+
+def _render_diagnostics_enabled():
+  return os.environ.get("SIMTOOLDIFF_RENDER_DIAGNOSTICS", "").lower() in {
+    "1", "true", "yes", "on",
+  }
+
+
+def _input_value(bsdf, names):
+  if not bsdf:
+    return None
+  for name in names:
+    if name in bsdf.inputs:
+      value = bsdf.inputs[name].default_value
+      try:
+        return tuple(round(float(x), 4) for x in value)
+      except TypeError:
+        return round(float(value), 4)
+  return None
+
+
+def _input_link_count(bsdf, names):
+  if not bsdf:
+    return 0
+  for name in names:
+    if name in bsdf.inputs:
+      return len(bsdf.inputs[name].links)
+  return 0
+
+
+def _print_material_diagnostics(label, obj):
+  if obj is None:
+    print(f"DIAG_MATERIAL {label} missing_object", file=sys.stderr, flush=True)
+    return
+  if not hasattr(obj.data, "materials"):
+    print(f"DIAG_MATERIAL {label} no_material_data", file=sys.stderr, flush=True)
+    return
+  materials = [m for m in obj.data.materials if m is not None]
+  print(
+    f"DIAG_MATERIAL {label} object={obj.name} slots={[m.name for m in materials]}",
+    file=sys.stderr,
+    flush=True,
+  )
+  for mat in materials:
+    bsdf = _get_principled_bsdf(mat)
+    print(
+      "DIAG_MATERIAL_NODE "
+      f"{label}/{mat.name} "
+      f"base={_input_value(bsdf, ('Base Color',))} "
+      f"metallic={_input_value(bsdf, ('Metallic',))} "
+      f"roughness={_input_value(bsdf, ('Roughness',))} "
+      f"coat={_input_value(bsdf, ('Coat Weight', 'Clearcoat'))} "
+      f"base_links={_input_link_count(bsdf, ('Base Color',))} "
+      f"roughness_links={_input_link_count(bsdf, ('Roughness',))} "
+      f"normal_links={_input_link_count(bsdf, ('Normal',))}",
+      file=sys.stderr,
+      flush=True,
+    )
+
+
+def _print_render_diagnostics(scene, robot_objects, tool_object):
+  world = scene.world
+  print(f"DIAG_RENDER_ENGINE_SETUP {scene.render.engine}", file=sys.stderr, flush=True)
+  if scene.render.engine == "CYCLES":
+    print(
+      "DIAG_CYCLES "
+      f"device={scene.cycles.device} samples={scene.cycles.samples} "
+      f"seed={scene.cycles.seed} denoise={scene.cycles.use_denoising}",
+      file=sys.stderr,
+      flush=True,
+    )
+
+  print(
+    f"DIAG_RESOLUTION {scene.render.resolution_x} {scene.render.resolution_y} "
+    f"{scene.render.resolution_percentage}",
+    file=sys.stderr,
+    flush=True,
+  )
+  cam = scene.camera
+  if cam:
+    hfov = 2.0 * math.atan((cam.data.sensor_width / 2.0) / cam.data.lens)
+    print(
+      "DIAG_CAMERA "
+      f"name={cam.name} loc={tuple(round(float(v), 4) for v in cam.location)} "
+      f"lens={cam.data.lens:.4f} sensor=({cam.data.sensor_width:.4f},"
+      f"{cam.data.sensor_height:.4f}) hfov={math.degrees(hfov):.4f} "
+      f"dof={cam.data.dof.use_dof}",
+      file=sys.stderr,
+      flush=True,
+    )
+
+  if world:
+    print(
+      f"DIAG_WORLD exists=True use_nodes={world.use_nodes} name={world.name}",
+      file=sys.stderr,
+      flush=True,
+    )
+    if world.use_nodes and world.node_tree:
+      nodes = [(n.name, n.type) for n in world.node_tree.nodes]
+      links = [
+        f"{l.from_node.name}:{l.from_socket.name}->{l.to_node.name}:{l.to_socket.name}"
+        for l in world.node_tree.links
+      ]
+      env_images = [
+        n.image.filepath if getattr(n, "image", None) else None
+        for n in world.node_tree.nodes
+        if n.type == "TEX_ENVIRONMENT"
+      ]
+      print(f"DIAG_WORLD_NODES {nodes}", file=sys.stderr, flush=True)
+      print(f"DIAG_WORLD_LINKS {links}", file=sys.stderr, flush=True)
+      print(f"DIAG_HDRI_IMAGES {env_images}", file=sys.stderr, flush=True)
+
+  lights = [
+    (
+      obj.name,
+      obj.data.type,
+      round(float(obj.data.energy), 4),
+      tuple(round(float(v), 4) for v in obj.location),
+    )
+    for obj in bpy.data.objects
+    if obj.type == "LIGHT"
+  ]
+  print(f"DIAG_LIGHTS {lights}", file=sys.stderr, flush=True)
+  print(
+    f"DIAG_OBJECT_NAMES {sorted(obj.name for obj in bpy.data.objects)}",
+    file=sys.stderr,
+    flush=True,
+  )
+
+  _print_material_diagnostics("arm_orange_link_1", bpy.data.objects.get("iiwa14_link_1"))
+  _print_material_diagnostics("arm_orange_link_2", bpy.data.objects.get("iiwa14_link_2"))
+  _print_material_diagnostics("arm_gray_link_7", bpy.data.objects.get("iiwa14_link_7"))
+  _print_material_diagnostics(
+    "hammer", tool_object or next((o for o in bpy.data.objects if o.name.startswith("tool_")), None)
+  )
+  _print_material_diagnostics("box_table", bpy.data.objects.get("table"))
+  _print_material_diagnostics("small_block", bpy.data.objects.get("table_nail"))
+
+
 def _robot_material(link_name, rgba):
   """Choose PBR-ish params for URDF robot colors."""
   if link_name.startswith("iiwa14_link_") and rgba[0] > 0.9 and rgba[1] > 0.25:
@@ -313,6 +608,41 @@ def _robot_material(link_name, rgba):
     specular=0.42,
     roughness_variation=0.06,
   )
+
+
+def _apply_claw_hammer_materials(obj):
+  """Assign simple head/handle PBR materials to the single imported hammer mesh."""
+  steel = _make_material(
+    "claw_hammer_head_steel",
+    (0.58, 0.57, 0.54, 1.0),
+    roughness=0.25,
+    metallic=1.0,
+    specular=0.50,
+    roughness_variation=0.06,
+    bevel_radius=0.0005,
+  )
+  rubber = _make_material(
+    "claw_hammer_handle_rubber",
+    (0.018, 0.017, 0.015, 1.0),
+    roughness=0.62,
+    metallic=0.0,
+    specular=0.28,
+    roughness_variation=0.08,
+    bevel_radius=0.0004,
+  )
+
+  obj.data.materials.clear()
+  obj.data.materials.append(rubber)
+  obj.data.materials.append(steel)
+  verts = obj.data.vertices
+  for poly in obj.data.polygons:
+    center = sum(
+      (verts[i].co for i in poly.vertices), mathutils.Vector((0.0, 0.0, 0.0))
+    ) / len(poly.vertices)
+    # The claw hammer OBJ is a single mesh. The head/claw geometry occupies the
+    # wide end and the handle stays comparatively narrow through the middle.
+    is_head = center.x > 0.105 or abs(center.y) > 0.022 or center.x < -0.035
+    poly.material_index = 1 if is_head else 0
 
 
 def _assign_material(obj, mat):
@@ -540,13 +870,7 @@ def setup_scene(args):
     )
 
     # World background
-    world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
-    scene.world = world
-    world.use_nodes = True
-    bg = world.node_tree.nodes.get("Background")
-    if bg:
-      bg.inputs["Color"].default_value = (0.46, 0.47, 0.45, 1.0)
-      bg.inputs["Strength"].default_value = 0.020
+    _setup_world_hdri(_resolve_hdri_path(), strength=1.0)
 
   # Render engine
   if args.engine == "cycles":
@@ -615,12 +939,6 @@ def setup_scene(args):
   floor_mat = _make_concrete_material(
     "lab_floor_matte", base=(0.49, 0.50, 0.47, 1.0), roughness=0.82
   )
-  wall_mat = _make_concrete_material(
-    "lab_wall_concrete", base=(0.39, 0.40, 0.38, 1.0), roughness=0.88
-  )
-  beam_mat = _make_material(
-    "lab_wall_beam_dark", (0.17, 0.18, 0.17, 1.0), roughness=0.74, specular=0.20
-  )
   bench_mat = _make_material(
     "rear_bench_laminate", (0.62, 0.61, 0.56, 1.0), roughness=0.64, specular=0.28
   )
@@ -652,26 +970,6 @@ def setup_scene(args):
     floor.name = "floor"
     floor.data.materials.append(floor_mat)
 
-  _add_cube(
-    "concrete_back_wall",
-    location=(0.0, 1.58, 0.88),
-    dimensions=(3.2, 0.08, 1.76),
-    mat=wall_mat,
-  )
-  for x in (-1.08, 1.08):
-    _add_cube(
-      f"wall_vertical_beam_{x:.1f}",
-      location=(x, 1.52, 0.88),
-      dimensions=(0.055, 0.10, 1.78),
-      mat=beam_mat,
-      bevel=0.002,
-    )
-  _add_cube(
-    "wall_mid_seam",
-    location=(0.0, 1.515, 0.88),
-    dimensions=(3.2, 0.10, 0.022),
-    mat=beam_mat,
-  )
   _add_cube(
     "rear_workbench_top",
     location=(0.25, 0.92, 0.44),
@@ -730,6 +1028,8 @@ def import_tool_mesh(mesh_path: str, object_name: str):
   obj.name = f"tool_{object_name}"
   obj.rotation_mode = 'QUATERNION'
   _shade_smooth(obj)
+  if object_name == "claw_hammer":
+    _apply_claw_hammer_materials(obj)
   return obj
 
 
@@ -780,11 +1080,18 @@ def render_frame(scene, output_dir):
   fd, path = tempfile.mkstemp(suffix=".png", dir=output_dir)
   os.close(fd)
   scene.render.filepath = path
+  if _render_diagnostics_enabled():
+    print(
+      f"DIAG_RENDER_ENGINE_BEFORE_RENDER {scene.render.engine}",
+      file=sys.stderr,
+      flush=True,
+    )
   bpy.ops.render.render(write_still=True)
   return path
 
 
 def main():
+  global _DIAGNOSTICS_PRINTED
   args = parse_args()
   scene = setup_scene(args)
 
@@ -840,6 +1147,10 @@ def main():
       # Poses arrive with quaternions in wxyz (Blender convention),
       # converted from IsaacGym xyzw by serialize_render_state().
       update_poses(robot_objects, tool_object, state)
+
+      if _render_diagnostics_enabled() and not _DIAGNOSTICS_PRINTED:
+        _print_render_diagnostics(scene, robot_objects, tool_object)
+        _DIAGNOSTICS_PRINTED = True
 
       # Render
       img_path = render_frame(scene, render_dir)

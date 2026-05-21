@@ -6,11 +6,20 @@ These tests are skipped if CUDA is not available or if PyTorch CUDA doesn't
 support the current GPU (e.g. Blackwell on Python 3.8).
 """
 
+import sys
+
 import numpy as np
 import pytest
 
 try:
+  # IsaacGym must be imported before torch. If another test already imported
+  # torch in this process, skip these GPU integration tests instead of failing
+  # the whole suite with IsaacGym's import-order guard.
+  if "torch" in sys.modules:
+    raise ImportError("torch already imported before isaacgym")
+  from isaacgym import gymapi  # noqa: F401
   import torch
+
   _cuda_ok = torch.cuda.is_available()
   if _cuda_ok:
     try:
