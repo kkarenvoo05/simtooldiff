@@ -104,6 +104,28 @@ def _eevee_engine_name():
   return "BLENDER_EEVEE"
 
 
+def _make_material(name, rgba, roughness=0.55, metallic=0.0):
+  """Create or update a simple Principled material."""
+  mat = bpy.data.materials.get(name) or bpy.data.materials.new(name)
+  mat.use_nodes = True
+  bsdf = mat.node_tree.nodes.get("Principled BSDF")
+  if bsdf:
+    if "Base Color" in bsdf.inputs:
+      bsdf.inputs["Base Color"].default_value = tuple(rgba)
+    if "Roughness" in bsdf.inputs:
+      bsdf.inputs["Roughness"].default_value = roughness
+    if "Metallic" in bsdf.inputs:
+      bsdf.inputs["Metallic"].default_value = metallic
+  return mat
+
+
+def _assign_material(obj, mat):
+  if not hasattr(obj.data, "materials"):
+    return
+  obj.data.materials.clear()
+  obj.data.materials.append(mat)
+
+
 def parse_args():
   """Parse args after the '--' separator in blender's command line."""
   argv = sys.argv
@@ -143,11 +165,19 @@ def setup_scene(args):
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
-    # Basic lighting (will be replaced when a .blend template is authored)
+    # Basic deterministic lighting. A richer HDRI/PBR template can still be
+    # loaded via --blend-file later, but the default scene should resemble the
+    # IsaacGym setup without requiring manual Blender authoring.
     bpy.ops.object.light_add(type='SUN', location=(0, 0, 5))
     sun = bpy.context.active_object
-    sun.data.energy = 3.0
+    sun.data.energy = 0.8
     sun.data.angle = 0.1  # Soft shadows
+
+    bpy.ops.object.light_add(type='AREA', location=(0.3, -0.8, 2.0))
+    area = bpy.context.active_object
+    area.name = "key_area_light"
+    area.data.energy = 60.0
+    area.data.size = 2.0
 
     # World background
     world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
@@ -155,7 +185,8 @@ def setup_scene(args):
     world.use_nodes = True
     bg = world.node_tree.nodes.get("Background")
     if bg:
-      bg.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
+      bg.inputs["Color"].default_value = (0.45, 0.45, 0.45, 1.0)
+      bg.inputs["Strength"].default_value = 0.12
 
   # Render engine
   if args.engine == "cycles":
@@ -176,19 +207,53 @@ def setup_scene(args):
   scene.render.resolution_y = args.height
   scene.render.resolution_percentage = 100
   scene.render.image_settings.file_format = 'PNG'
+  # Blender's default Filmic transform is intentionally low-contrast and washes
+  # out URDF colors. IsaacGym's viewport is closer to Standard display mapping.
+  scene.view_settings.view_transform = 'Standard'
+  scene.view_settings.look = 'None'
+  scene.view_settings.exposure = 0.0
+  scene.view_settings.gamma = 1.0
 
-  # Table: simple plane at z=0.38 (TABLE_Z from stage5)
+  # IsaacGym scene furniture from assets/urdf/table_narrow_nail.urdf.
+  # The table actor is centered at (0, 0, TABLE_Z); the URDF box is centered
+  # on that actor with size 0.475 x 0.4 x 0.3, plus a small gray nail.
+  table_mat = _make_material("table_wood", (0.82, 0.56, 0.35, 1.0), roughness=0.7)
+  nail_mat = _make_material("table_nail_grey", (0.5, 0.5, 0.5, 1.0), roughness=0.45)
   if not bpy.data.objects.get("table"):
-    bpy.ops.mesh.primitive_plane_add(size=2.0, location=(0, 0.4, 0.38))
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.0, 0.0, 0.38))
     table = bpy.context.active_object
     table.name = "table"
-    # Gray material
-    mat = bpy.data.materials.new("TableMaterial")
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    table.dimensions = (0.475, 0.4, 0.3)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    _assign_material(table, table_mat)
+
+  if not bpy.data.objects.get("table_nail"):
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(-0.16, 0.06, 0.38 + 0.175))
+    nail = bpy.context.active_object
+    nail.name = "table_nail"
+    nail.dimensions = (0.03, 0.03, 0.06)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    _assign_material(nail, nail_mat)
+
+  # IsaacGym viewer shows a grey floor grid behind the table. This is static
+  # scene context only; it is not driven by sim state.
+  if not bpy.data.objects.get("floor"):
+    bpy.ops.mesh.primitive_plane_add(size=8.0, location=(0.0, 0.0, 0.0))
+    floor = bpy.context.active_object
+    floor.name = "floor"
+    floor_mat = bpy.data.materials.new("floor_checker")
+    floor_mat.use_nodes = True
+    nodes = floor_mat.node_tree.nodes
+    bsdf = nodes.get("Principled BSDF")
+    checker = nodes.new(type="ShaderNodeTexChecker")
+    checker.inputs["Scale"].default_value = 8.0
+    checker.inputs["Color1"].default_value = (0.45, 0.45, 0.45, 1.0)
+    checker.inputs["Color2"].default_value = (0.62, 0.62, 0.62, 1.0)
     if bsdf:
-      bsdf.inputs["Base Color"].default_value = (0.6, 0.6, 0.6, 1.0)
-    table.data.materials.append(mat)
+      floor_mat.node_tree.links.new(checker.outputs["Color"], bsdf.inputs["Base Color"])
+      if "Roughness" in bsdf.inputs:
+        bsdf.inputs["Roughness"].default_value = 0.8
+    floor.data.materials.append(floor_mat)
 
   return scene
 
@@ -216,6 +281,12 @@ def import_meshes(manifest_path: str):
 
     obj.name = link_name
     obj.rotation_mode = 'QUATERNION'
+    rgba = info.get("material_rgba")
+    if rgba is not None:
+      _assign_material(
+        obj,
+        _make_material(f"urdf_{link_name}_material", rgba, roughness=0.45),
+      )
     objects[link_name] = obj
 
   return objects

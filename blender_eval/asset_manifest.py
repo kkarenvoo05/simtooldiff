@@ -27,6 +27,7 @@ class LinkMeshInfo:
   """Visual mesh information for one link."""
   mesh_path: Path
   visual_origin: np.ndarray = field(default_factory=lambda: np.eye(4))
+  material_rgba: Optional[Tuple[float, float, float, float]] = None
   is_collapsed: bool = False
   surviving_parent: Optional[str] = None
   joint_chain_offset: Optional[np.ndarray] = None
@@ -50,6 +51,45 @@ def _parse_origin(elem: Optional[ET.Element]) -> np.ndarray:
   return urdf_origin_to_matrix(xyz, rpy)
 
 
+def _parse_rgba(value: str) -> Tuple[float, float, float, float]:
+  parts = [float(x) for x in value.split()]
+  if len(parts) == 3:
+    parts.append(1.0)
+  if len(parts) != 4:
+    raise ValueError(f"Expected RGB/RGBA color, got {value!r}")
+  return tuple(parts)  # type: ignore[return-value]
+
+
+def _collect_material_colors(root: ET.Element) -> Dict[str, Tuple[float, float, float, float]]:
+  """Collect top-level URDF material name -> RGBA mappings."""
+  result: Dict[str, Tuple[float, float, float, float]] = {}
+  for mat in root.findall("material"):
+    name = mat.get("name")
+    color = mat.find("color")
+    if name and color is not None and color.get("rgba"):
+      result[name] = _parse_rgba(color.get("rgba"))
+  return result
+
+
+def _parse_visual_material(
+  visual: ET.Element,
+  material_colors: Dict[str, Tuple[float, float, float, float]],
+) -> Optional[Tuple[float, float, float, float]]:
+  """Return the visual material RGBA, resolving top-level URDF material refs."""
+  material = visual.find("material")
+  if material is None:
+    return None
+
+  inline_color = material.find("color")
+  if inline_color is not None and inline_color.get("rgba"):
+    return _parse_rgba(inline_color.get("rgba"))
+
+  name = material.get("name")
+  if name:
+    return material_colors.get(name)
+  return None
+
+
 def parse_urdf_visual_meshes(urdf_path: Path) -> Dict[str, LinkMeshInfo]:
   """Parse URDF and return visual mesh info for each link that has one.
 
@@ -62,9 +102,17 @@ def parse_urdf_visual_meshes(urdf_path: Path) -> Dict[str, LinkMeshInfo]:
   tree = ET.parse(str(urdf_path))
   root = tree.getroot()
   urdf_dir = urdf_path.parent
+  material_colors = _collect_material_colors(root)
 
-  # 1. Parse all links: name → (has_visual, mesh_path, visual_origin)
-  link_visuals: Dict[str, Tuple[Optional[Path], np.ndarray]] = {}
+  # 1. Parse all links: name -> (has_visual, mesh_path, visual_origin, material)
+  link_visuals: Dict[
+    str,
+    Tuple[
+      Optional[Path],
+      np.ndarray,
+      Optional[Tuple[float, float, float, float]],
+    ],
+  ] = {}
   for link_elem in root.findall("link"):
     name = link_elem.get("name")
     visual = link_elem.find("visual")
@@ -75,11 +123,12 @@ def parse_urdf_visual_meshes(urdf_path: Path) -> Dict[str, LinkMeshInfo]:
         mesh_filename = mesh.get("filename")
         mesh_path = (urdf_dir / mesh_filename).resolve()
         visual_origin = _parse_origin(visual.find("origin"))
-        link_visuals[name] = (mesh_path, visual_origin)
+        material_rgba = _parse_visual_material(visual, material_colors)
+        link_visuals[name] = (mesh_path, visual_origin, material_rgba)
       else:
-        link_visuals[name] = (None, np.eye(4))
+        link_visuals[name] = (None, np.eye(4), None)
     else:
-      link_visuals[name] = (None, np.eye(4))
+      link_visuals[name] = (None, np.eye(4), None)
 
   # 2. Parse all joints: child → (parent, joint_type, joint_origin)
   child_to_parent: Dict[str, Tuple[str, str, np.ndarray]] = {}
@@ -123,7 +172,7 @@ def parse_urdf_visual_meshes(urdf_path: Path) -> Dict[str, LinkMeshInfo]:
 
   # 4. Build the manifest
   manifest: Dict[str, LinkMeshInfo] = {}
-  for link_name, (mesh_path, visual_origin) in link_visuals.items():
+  for link_name, (mesh_path, visual_origin, material_rgba) in link_visuals.items():
     if mesh_path is None:
       continue  # No visual mesh for this link
 
@@ -131,6 +180,7 @@ def parse_urdf_visual_meshes(urdf_path: Path) -> Dict[str, LinkMeshInfo]:
     manifest[link_name] = LinkMeshInfo(
       mesh_path=mesh_path,
       visual_origin=visual_origin,
+      material_rgba=material_rgba,
       is_collapsed=collapsed,
       surviving_parent=surviving_parent,
       joint_chain_offset=chain_offset,

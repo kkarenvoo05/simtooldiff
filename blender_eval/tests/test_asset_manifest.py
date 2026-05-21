@@ -107,6 +107,23 @@ class TestRobotManifest:
     info = manifest["iiwa14_link_0"]
     assert info.offset_from_parent is None
 
+  def test_robot_material_colors_from_urdf(self, manifest):
+    npt.assert_allclose(
+      manifest["iiwa14_link_1"].material_rgba,
+      (1.0, 0.4235, 0.0392, 1.0),
+      atol=1e-6,
+    )
+    npt.assert_allclose(
+      manifest["iiwa14_link_0"].material_rgba,
+      (0.4, 0.4, 0.4, 1.0),
+      atol=1e-6,
+    )
+    npt.assert_allclose(
+      manifest["left_hand_C_MC"].material_rgba,
+      (0.79216, 0.81961, 0.93333, 1.0),
+      atol=1e-6,
+    )
+
 
 class TestObjectMeshPath:
   def test_claw_hammer(self):

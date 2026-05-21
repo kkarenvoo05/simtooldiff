@@ -106,7 +106,13 @@ def main():
   tmp = tempfile.mkdtemp(prefix="smoke_")
   manifest_path = os.path.join(tmp, "manifest.json")
   with open(manifest_path, "w") as f:
-    json.dump({k: {"mesh_path": str(v.mesh_path)} for k, v in manifest.items()}, f)
+    json.dump({
+      k: {
+        "mesh_path": str(v.mesh_path),
+        "material_rgba": list(v.material_rgba) if v.material_rgba else None,
+      }
+      for k, v in manifest.items()
+    }, f)
   camera_path = os.path.join(tmp, "camera.json")
   with open(camera_path, "w") as f:
     json.dump({

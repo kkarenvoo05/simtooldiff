@@ -248,7 +248,10 @@ def run_worker(args) -> None:
 
     _blender_tmpdir = tempfile.mkdtemp(prefix="blender_cfg_")
     _manifest_dict = {
-      name: {"mesh_path": str(info.mesh_path)}
+      name: {
+        "mesh_path": str(info.mesh_path),
+        "material_rgba": list(info.material_rgba) if info.material_rgba else None,
+      }
       for name, info in mesh_manifest.items()
     }
     _manifest_path = os.path.join(_blender_tmpdir, "manifest.json")

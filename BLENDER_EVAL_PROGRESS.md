@@ -170,14 +170,40 @@ which is expected for the untrained checkpoint and is not a completion signal.
    accept `--blender`, allowing the verified portable Blender 4.2.9 binary under `/tmp` to be
    used directly.
 
+## Procedural Blender scene status
+
+The default Blender scene no longer requires hand-authoring a `.blend` file for
+IsaacGym-equivalent static context. `blender_render_script.py` procedurally builds:
+
+- the `table_narrow_nail.urdf` table as a 0.475 x 0.4 x 0.3 m wood-colored box
+  centered at the IsaacGym table pose `(0, 0, 0.38)`;
+- the small gray nail box at the URDF offset `(-0.16, 0.06, 0.175)`;
+- a gray checker floor approximating the IsaacGym viewer background;
+- deterministic sun + area lighting with Standard color management;
+- URDF material colors for the robot meshes (KUKA orange/gray, Sharpa hand colors).
+
+A `.blend` template is now optional, not required for the bridge. Use one later only
+for more polished HDRI/PBR lighting or paper-quality material work.
+
+Verified commands:
+
+```bash
+PYTHONPATH=$PWD .venv/bin/python blender_eval/open_loop_smoke_test.py \
+  --blender /tmp/blender-4.2.9-linux-x64/blender
+```
+
+Result: PASS, saved `/tmp/smoke_render.png`, with the table box/nail, floor, and
+URDF robot colors visible. A short closed-loop preview was also generated at
+`/tmp/blender_scene_check/fail_00_attempt001.gif`.
+
 ## What's NOT done yet
 
 1. **A/B parity test** (`--renderer isaacgym` vs `eval_diffusion_policy.py`) -- needs a
    GPU-compatible machine (not Blackwell + Python 3.8). Still the critical gate before any
    closed-loop number is trusted.
-2. **`.blend` scene template** -- placeholder single-sun lighting exists and renders; needs
-   HDRI, PBR materials, and the real training-camera FOV (smoke test used a placeholder 58 deg;
-   eval reads `DATASET_CAMERA_HORIZONTAL_FOV` from stage5). This is GUI work.
+2. **Optional `.blend` scene polish** -- the default procedural scene now matches the
+   IsaacGym table/floor/URDF colors well enough for debugging and first evaluations. A
+   `.blend` template is only needed if we want HDRI/PBR material polish for paper visuals.
 3. **Closed-loop render sanity check against a REAL rollout** -- replay ~10 frames of an
    already-collected rollout in Blender, eyeball the GIF. The open-loop smoke test validates the
    pipeline and axis conventions at zero pose, but a real articulated rollout (bent arm, grasping
@@ -316,8 +342,9 @@ The most likely cause is a subtle divergence in the eval loop. To debug:
 ### What comes after parity passes
 
 1. **Install Blender 4.x** (`apt install blender` or download portable build)
-2. **Author the `.blend` scene template** -- HDRI lighting, PBR materials on
-   robot/tools, camera matching the training viewpoint. This is GUI work.
+2. **Optional scene polish** -- if the procedural table/floor/materials are not enough for
+   the paper, add a `.blend` template with HDRI lighting and PBR materials while preserving
+   the training camera geometry.
 3. **Open-loop render sanity check** -- replay a known rollout in Blender, render
    ~10 frames, make a GIF, eyeball that hand+tool placement and camera framing
    match IsaacGym's viewer. This is where axis convention issues surface.
