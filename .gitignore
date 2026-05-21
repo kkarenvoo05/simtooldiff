@@ -264,3 +264,5 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+# Local Isaac Gym copy (not part of repo)
+isaacgym_pkg/
