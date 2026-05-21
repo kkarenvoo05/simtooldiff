@@ -170,13 +170,18 @@ def run_worker(args) -> None:
 
   # --- Load policy from checkpoint ---
   ckpt_path = Path(args.checkpoint).expanduser().resolve()
-  payload = torch.load(ckpt_path.open("rb"), pickle_module=dill, map_location=device)
+  # Keep the full checkpoint payload on CPU. The epoch-50 checkpoint is ~4 GB
+  # and includes tensors that are only needed for loading; putting the whole
+  # payload on CUDA can exhaust 8 GB GPUs before IsaacGym even initializes.
+  payload = torch.load(ckpt_path.open("rb"), pickle_module=dill, map_location="cpu")
   cfg = payload["cfg"]
   ws_cls = hydra.utils.get_class(cfg._target_)
   workspace = ws_cls(cfg, output_dir=tempfile.mkdtemp(prefix="dp_eval_"))
   workspace.load_payload(payload)
   policy = workspace.ema_model if cfg.training.use_ema and workspace.ema_model is not None else workspace.model
   policy.to(device).eval()
+  if torch.cuda.is_available() and str(device).startswith("cuda"):
+    torch.cuda.empty_cache()
 
   n_obs_steps = int(cfg.n_obs_steps)
   n_action_steps = int(cfg.n_action_steps)
