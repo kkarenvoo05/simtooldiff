@@ -175,12 +175,12 @@ def _make_wood_material(name):
   """Create a procedural light-oak material with grain and normal variation."""
   mat = _make_material(
     name,
-    (0.66, 0.49, 0.30, 1.0),
-    roughness=0.58,
+    (0.60, 0.44, 0.27, 1.0),
+    roughness=0.64,
     metallic=0.0,
-    specular=0.36,
-    coat=0.08,
-    roughness_variation=0.12,
+    specular=0.28,
+    coat=0.02,
+    roughness_variation=0.08,
   )
   nodes = mat.node_tree.nodes
   links = mat.node_tree.links
@@ -192,9 +192,9 @@ def _make_wood_material(name):
     noise.inputs["Roughness"].default_value = 0.58
     ramp = nodes.new(type="ShaderNodeValToRGB")
     ramp.color_ramp.elements[0].position = 0.12
-    ramp.color_ramp.elements[0].color = (0.52, 0.36, 0.20, 1.0)
+    ramp.color_ramp.elements[0].color = (0.46, 0.31, 0.17, 1.0)
     ramp.color_ramp.elements[1].position = 1.0
-    ramp.color_ramp.elements[1].color = (0.72, 0.54, 0.34, 1.0)
+    ramp.color_ramp.elements[1].color = (0.69, 0.52, 0.33, 1.0)
     bump = nodes.new(type="ShaderNodeBump")
     bump.inputs["Strength"].default_value = 0.018
     bump.inputs["Distance"].default_value = 0.006
@@ -289,11 +289,11 @@ def _robot_material(link_name, rgba):
   if link_name.startswith("iiwa14_link_") and rgba[0] > 0.9 and rgba[1] > 0.25:
     return _make_material(
       f"urdf_{link_name}_material",
-      rgba,
-      roughness=0.36,
-      specular=0.56,
-      coat=0.28,
-      roughness_variation=0.08,
+      (0.78, 0.29, 0.030, rgba[3]),
+      roughness=0.38,
+      specular=0.50,
+      coat=0.26,
+      roughness_variation=0.06,
       bevel_radius=0.0012,
     )
   if link_name.startswith("iiwa14_link_") and max(rgba[:3]) < 0.45:
@@ -398,7 +398,7 @@ def _add_lab_strip_light(target):
     "overhead_fixture_black", (0.015, 0.014, 0.012, 1.0), roughness=0.62, specular=0.25
   )
   diffuser_mat = _make_emission_material(
-    "overhead_diffuser_emission", (1.0, 0.95, 0.84, 1.0), strength=2.0
+    "overhead_diffuser_emission", (1.0, 0.95, 0.84, 1.0), strength=0.9
   )
   cable_mat = _make_material(
     "fixture_cable_dark", (0.035, 0.035, 0.033, 1.0), roughness=0.72, specular=0.2
@@ -430,7 +430,7 @@ def _add_lab_strip_light(target):
     "overhead_rect_key",
     location=(0.08, -0.255, 1.49),
     target=target,
-    energy=95.0,
+    energy=26.0,
     size=1.20,
     size_y=0.28,
   )
@@ -462,7 +462,7 @@ def _set_color_management(scene):
   elif "None" in looks:
     scene.view_settings.look = "None"
 
-  scene.view_settings.exposure = -1.15
+  scene.view_settings.exposure = -0.90
   scene.view_settings.gamma = 1.0
 
 
@@ -513,28 +513,28 @@ def setup_scene(args):
       "key_softbox",
       location=(-1.15, -1.10, 1.55),
       target=scene_center,
-      energy=42.0,
-      size=1.60,
+      energy=28.0,
+      size=1.55,
     )
     _add_area_light(
       "fill_softbox",
       location=(1.35, -0.70, 1.05),
       target=scene_center,
-      energy=14.0,
-      size=2.70,
+      energy=2.5,
+      size=3.00,
     )
     _add_area_light(
       "rim_softbox",
       location=(0.35, 1.20, 1.35),
       target=(0.0, 0.10, 0.80),
-      energy=14.0,
+      energy=11.0,
       size=1.25,
     )
     _add_spot_light(
       "tool_spot",
       location=(-0.55, -0.95, 1.30),
       target=(-0.02, 0.04, 0.60),
-      energy=1.4,
+      energy=0.35,
       size=1.25,
       blend=0.85,
     )
@@ -546,7 +546,7 @@ def setup_scene(args):
     bg = world.node_tree.nodes.get("Background")
     if bg:
       bg.inputs["Color"].default_value = (0.46, 0.47, 0.45, 1.0)
-      bg.inputs["Strength"].default_value = 0.07
+      bg.inputs["Strength"].default_value = 0.020
 
   # Render engine
   if args.engine == "cycles":
