@@ -53,6 +53,7 @@ class BlenderRenderer:
     tool_mesh_path: str = "",
     engine: str = "cycles",
     samples: int = 64,
+    cycles_device: str = "auto",
     blend_file: Optional[str] = None,
     blender_executable: str = "blender",
   ):
@@ -75,6 +76,7 @@ class BlenderRenderer:
       "--width", str(width),
       "--height", str(height),
       "--samples", str(samples),
+      "--cycles-device", cycles_device,
       "--response-fifo", self._fifo_path,
     ]
     if blend_file:

@@ -62,8 +62,11 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
     cmd += [
       "--engine", args.engine,
       "--samples", str(args.samples),
+      "--cycles-device", args.cycles_device,
       "--blender", args.blender,
     ]
+    if args.blend_file is not None:
+      cmd += ["--blend-file", str(args.blend_file)]
   if args.video_dir is not None:
     cmd += ["--video-dir", str(args.video_dir / spec.object_name)]
 
@@ -113,6 +116,7 @@ def run_driver(args) -> None:
 
   summary = {
     "renderer": args.renderer,
+    "blend_file": str(args.blend_file) if args.blend_file is not None else None,
     "split": args.split,
     "overall_success_rate": overall,
     "total_attempted": total_attempted,
@@ -286,6 +290,8 @@ def run_worker(args) -> None:
       tool_mesh_path=tool_mesh_path,
       engine=args.engine,
       samples=args.samples,
+      cycles_device=args.cycles_device,
+      blend_file=str(args.blend_file) if args.blend_file is not None else None,
       blender_executable=args.blender,
     )
   else:
@@ -442,6 +448,7 @@ def run_worker(args) -> None:
     "object_category": args.object_category,
     "task_name": args.task_name,
     "renderer": args.renderer,
+    "blend_file": str(args.blend_file) if args.blend_file is not None else None,
     "attempted": attempted,
     "succeeded": succeeded,
     "success_rate": success_rate,
@@ -467,8 +474,12 @@ def parse_args() -> argparse.Namespace:
                  help="Blender render engine (only used with --renderer blender)")
   p.add_argument("--samples", type=int, default=64,
                  help="Cycles render samples (only used with --renderer blender)")
+  p.add_argument("--cycles-device", choices=("auto", "gpu", "cpu"), default="auto",
+                 help="Cycles compute device for Blender: auto, gpu, or cpu")
   p.add_argument("--blender", default="blender",
                  help="Path to Blender executable (only used with --renderer blender)")
+  p.add_argument("--blend-file", type=Path, default=None,
+                 help="Optional master .blend template for static Blender scene visuals")
   p.add_argument("--split", choices=("train", "ood"), default="train")
   p.add_argument("--episodes-per-object", type=int, default=32)
   p.add_argument("--num-envs", type=int, default=8)

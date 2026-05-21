@@ -796,6 +796,135 @@ def _set_color_management(scene):
   scene.view_settings.gamma = 1.0
 
 
+def _add_default_static_scene():
+  """Create the fallback scripted static scene used when no .blend is supplied."""
+  # IsaacGym scene furniture from assets/urdf/table_narrow_nail.urdf.
+  # The table actor is centered at (0, 0, TABLE_Z); the URDF box is centered
+  # on that actor with size 0.475 x 0.4 x 0.3, plus a small gray nail.
+  table_mat = _make_wood_material("table_light_oak")
+  nail_mat = _make_marble_material("table_nail_marble")
+  floor_mat = _make_concrete_material(
+    "lab_floor_matte", base=(0.49, 0.50, 0.47, 1.0), roughness=0.82
+  )
+  bench_mat = _make_material(
+    "rear_bench_laminate", (0.62, 0.61, 0.56, 1.0), roughness=0.64, specular=0.28
+  )
+  bench_leg_mat = _make_material(
+    "rear_bench_frame", (0.12, 0.13, 0.13, 1.0), roughness=0.55, metallic=0.55
+  )
+
+  _add_cube(
+    "table",
+    location=(0.0, 0.0, 0.38),
+    dimensions=(0.475, 0.4, 0.3),
+    mat=table_mat,
+    bevel=0.010,
+    segments=4,
+  )
+  _add_cube(
+    "table_nail",
+    location=(-0.16, 0.06, 0.38 + 0.175),
+    dimensions=(0.03, 0.03, 0.06),
+    mat=nail_mat,
+    bevel=0.002,
+    segments=2,
+  )
+
+  # A neutral lab scene replaces the old checkerboard/gradient placeholder.
+  if not bpy.data.objects.get("floor"):
+    bpy.ops.mesh.primitive_plane_add(size=8.0, location=(0.0, 0.0, 0.0))
+    floor = bpy.context.active_object
+    floor.name = "floor"
+    floor.data.materials.append(floor_mat)
+
+  _add_cube(
+    "rear_workbench_top",
+    location=(0.25, 0.92, 0.44),
+    dimensions=(1.65, 0.42, 0.055),
+    mat=bench_mat,
+    bevel=0.006,
+  )
+  for x in (-0.45, 0.95):
+    for y in (0.76, 1.08):
+      _add_cube(
+        f"rear_workbench_leg_{x:.1f}_{y:.1f}",
+        location=(x, y, 0.22),
+        dimensions=(0.035, 0.035, 0.42),
+        mat=bench_leg_mat,
+        bevel=0.002,
+      )
+
+
+def _as_tuple(values):
+  return tuple(round(float(v), 4) for v in values)
+
+
+def _max_abs_delta(a, b):
+  return max(abs(float(x) - float(y)) for x, y in zip(a, b))
+
+
+def _validate_template_scene(blend_file):
+  """Validate the static-scene contract for an externally authored template."""
+  required = {
+    "table": {
+      "location": (0.0, 0.0, 0.38),
+      "dimensions": (0.475, 0.4, 0.3),
+    },
+    "table_nail": {
+      "location": (-0.16, 0.06, 0.555),
+      "dimensions": (0.03, 0.03, 0.06),
+    },
+    "floor": {},
+  }
+  missing = [name for name in required if bpy.data.objects.get(name) is None]
+  if missing:
+    raise RuntimeError(
+      f"Blend template {blend_file} is missing required static objects: {missing}. "
+      "The template must include at least table, table_nail, and floor."
+    )
+
+  for name, expected in required.items():
+    obj = bpy.data.objects[name]
+    if "location" in expected:
+      delta = _max_abs_delta(obj.location, expected["location"])
+      if delta > 0.003:
+        print(
+          "WARNING: template object location differs from IsaacGym visual contract: "
+          f"{name} actual={_as_tuple(obj.location)} expected={expected['location']}",
+          file=sys.stderr,
+          flush=True,
+        )
+    if "dimensions" in expected:
+      delta = _max_abs_delta(obj.dimensions, expected["dimensions"])
+      if delta > 0.010:
+        print(
+          "WARNING: template object dimensions differ from IsaacGym visual contract: "
+          f"{name} actual={_as_tuple(obj.dimensions)} expected={expected['dimensions']}",
+          file=sys.stderr,
+          flush=True,
+        )
+
+  has_light = any(obj.type == "LIGHT" for obj in bpy.data.objects)
+  world = bpy.context.scene.world
+  has_hdri = bool(
+    world and world.use_nodes and world.node_tree and any(
+      node.type == "TEX_ENVIRONMENT" for node in world.node_tree.nodes
+    )
+  )
+  if not has_light:
+    print(
+      f"WARNING: blend template {blend_file} contains no lights.",
+      file=sys.stderr,
+      flush=True,
+    )
+  if not has_hdri:
+    print(
+      f"WARNING: blend template {blend_file} has no HDRI Environment Texture.",
+      file=sys.stderr,
+      flush=True,
+    )
+
+
 def parse_args():
   """Parse args after the '--' separator in blender's command line."""
   argv = sys.argv
@@ -815,6 +944,8 @@ def parse_args():
   p.add_argument("--height", type=int, default=384)
   p.add_argument("--samples", type=int, default=64,
                  help="Cycles render samples (lower = faster, noisier)")
+  p.add_argument("--cycles-device", choices=("auto", "gpu", "cpu"), default="auto",
+                 help="Cycles compute device. Use cpu when policy+IsaacGym need GPU VRAM.")
   p.add_argument("--blend-file", type=str, default=None,
                  help="Optional .blend scene template to load (lighting, materials)")
   p.add_argument("--response-fifo", type=str, required=True,
@@ -825,11 +956,15 @@ def parse_args():
 def setup_scene(args):
   """Configure render engine, resolution, and basic scene."""
   scene = bpy.context.scene
+  using_template = False
 
   # Load scene template if provided
-  if args.blend_file and os.path.exists(args.blend_file):
+  if args.blend_file:
+    if not os.path.exists(args.blend_file):
+      raise FileNotFoundError(f"Blend template not found: {args.blend_file}")
     bpy.ops.wm.open_mainfile(filepath=args.blend_file)
     scene = bpy.context.scene
+    using_template = True
   else:
     # Clear default scene
     bpy.ops.object.select_all(action='SELECT')
@@ -899,10 +1034,11 @@ def setup_scene(args):
     scene.render.use_persistent_data = True
     scene.render.use_motion_blur = USE_MOTION_BLUR
 
-    # Prefer OptiX/CUDA on NVIDIA, but keep the script runnable on CPU-only hosts.
+    # Prefer OptiX/CUDA on NVIDIA unless CPU is explicitly requested. CPU is
+    # useful on 8 GB GPUs when policy + IsaacGym already consume most VRAM.
     scene.cycles.device = 'CPU'
     prefs = bpy.context.preferences.addons.get('cycles')
-    if prefs:
+    if prefs and args.cycles_device in {"auto", "gpu"}:
       for compute_type in ("OPTIX", "CUDA"):
         try:
           prefs.preferences.compute_device_type = compute_type
@@ -920,6 +1056,8 @@ def setup_scene(args):
           except Exception:
             pass
           break
+    if args.cycles_device == "gpu" and scene.cycles.device != 'GPU':
+      raise RuntimeError("Cycles GPU requested but no OPTIX/CUDA device was enabled")
   else:
     scene.render.engine = _eevee_engine_name()
     scene.render.use_motion_blur = USE_MOTION_BLUR
@@ -931,61 +1069,10 @@ def setup_scene(args):
   scene.render.image_settings.file_format = 'PNG'
   _set_color_management(scene)
 
-  # IsaacGym scene furniture from assets/urdf/table_narrow_nail.urdf.
-  # The table actor is centered at (0, 0, TABLE_Z); the URDF box is centered
-  # on that actor with size 0.475 x 0.4 x 0.3, plus a small gray nail.
-  table_mat = _make_wood_material("table_light_oak")
-  nail_mat = _make_marble_material("table_nail_marble")
-  floor_mat = _make_concrete_material(
-    "lab_floor_matte", base=(0.49, 0.50, 0.47, 1.0), roughness=0.82
-  )
-  bench_mat = _make_material(
-    "rear_bench_laminate", (0.62, 0.61, 0.56, 1.0), roughness=0.64, specular=0.28
-  )
-  bench_leg_mat = _make_material(
-    "rear_bench_frame", (0.12, 0.13, 0.13, 1.0), roughness=0.55, metallic=0.55
-  )
-
-  _add_cube(
-    "table",
-    location=(0.0, 0.0, 0.38),
-    dimensions=(0.475, 0.4, 0.3),
-    mat=table_mat,
-    bevel=0.010,
-    segments=4,
-  )
-  _add_cube(
-    "table_nail",
-    location=(-0.16, 0.06, 0.38 + 0.175),
-    dimensions=(0.03, 0.03, 0.06),
-    mat=nail_mat,
-    bevel=0.002,
-    segments=2,
-  )
-
-  # A neutral lab scene replaces the old checkerboard/gradient placeholder.
-  if not bpy.data.objects.get("floor"):
-    bpy.ops.mesh.primitive_plane_add(size=8.0, location=(0.0, 0.0, 0.0))
-    floor = bpy.context.active_object
-    floor.name = "floor"
-    floor.data.materials.append(floor_mat)
-
-  _add_cube(
-    "rear_workbench_top",
-    location=(0.25, 0.92, 0.44),
-    dimensions=(1.65, 0.42, 0.055),
-    mat=bench_mat,
-    bevel=0.006,
-  )
-  for x in (-0.45, 0.95):
-    for y in (0.76, 1.08):
-      _add_cube(
-        f"rear_workbench_leg_{x:.1f}_{y:.1f}",
-        location=(x, y, 0.22),
-        dimensions=(0.035, 0.035, 0.42),
-        mat=bench_leg_mat,
-        bevel=0.002,
-      )
+  if using_template:
+    _validate_template_scene(args.blend_file)
+  else:
+    _add_default_static_scene()
 
   return scene
 
