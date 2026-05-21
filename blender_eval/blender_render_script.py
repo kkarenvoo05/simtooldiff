@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
-# UNVERIFIED — This script runs inside Blender's Python interpreter, not the
-# simtooldiff venv. It cannot be tested on a headless box without Blender.
+# This script runs inside Blender's Python interpreter, not the simtooldiff venv.
+# VERIFIED to run end-to-end on Blender 4.2.9 LTS (headless, Cycles CPU) via
+# blender_eval/open_loop_smoke_test.py: imports all 36 robot STL meshes + the
+# tool OBJ, configures the camera, and renders a frame over the FIFO protocol.
+# Still UNVERIFIED against a real collected rollout (needs the cluster) and the
+# authored .blend scene template (HDRI/PBR lighting) does not exist yet.
 #
 # Usage:
 #   blender --background --python blender_eval/blender_render_script.py -- \
@@ -38,6 +42,66 @@ except ImportError:
   print("ERROR: This script must be run inside Blender's Python interpreter.")
   print("Usage: blender --background --python blender_render_script.py -- [args]")
   sys.exit(1)
+
+
+def _import_mesh_file(mesh_path: str):
+  """Import one STL/OBJ mesh, returning the newly-created bpy object.
+
+  Robust across Blender versions:
+    - STL: prefer the 4.0+ C++ importer (bpy.ops.wm.stl_import); fall back to
+      the legacy add-on operator (bpy.ops.import_mesh.stl), removed in 4.2.
+    - OBJ: bpy.ops.wm.obj_import (4.x). The .mtl sibling is auto-resolved.
+  Imported-object capture is done by diffing the object set before/after,
+  which is reliable regardless of which operator selected what.
+  """
+  ext = os.path.splitext(mesh_path)[1].lower()
+  before = set(bpy.data.objects)
+
+  if ext == ".stl":
+    if hasattr(bpy.ops.wm, "stl_import"):
+      bpy.ops.wm.stl_import(filepath=mesh_path)
+    elif hasattr(bpy.ops.import_mesh, "stl"):
+      bpy.ops.import_mesh.stl(filepath=mesh_path)
+    else:
+      raise RuntimeError("No STL importer available in this Blender build")
+  elif ext == ".obj":
+    if hasattr(bpy.ops.wm, "obj_import"):
+      bpy.ops.wm.obj_import(filepath=mesh_path)
+    elif hasattr(bpy.ops, "import_scene") and hasattr(bpy.ops.import_scene, "obj"):
+      bpy.ops.import_scene.obj(filepath=mesh_path)
+    else:
+      raise RuntimeError("No OBJ importer available in this Blender build")
+  else:
+    raise ValueError(f"Unsupported mesh format: {ext}")
+
+  new_objs = [o for o in bpy.data.objects if o not in before]
+  if not new_objs:
+    raise RuntimeError(f"Import produced no new object: {mesh_path}")
+  # An OBJ may import as several objects; join them into one for a clean handle.
+  if len(new_objs) > 1:
+    bpy.ops.object.select_all(action='DESELECT')
+    for o in new_objs:
+      o.select_set(True)
+    bpy.context.view_layer.objects.active = new_objs[0]
+    bpy.ops.object.join()
+    new_objs = [bpy.context.view_layer.objects.active]
+  return new_objs[0]
+
+
+def _eevee_engine_name():
+  """Return the EEVEE engine identifier valid for this Blender version.
+
+  Blender 4.2+ renamed the engine to BLENDER_EEVEE_NEXT; 4.0-4.1 use
+  BLENDER_EEVEE.
+  """
+  try:
+    items = bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items
+    names = {item.identifier for item in items}
+  except (KeyError, AttributeError):
+    names = set()
+  if "BLENDER_EEVEE_NEXT" in names:
+    return "BLENDER_EEVEE_NEXT"
+  return "BLENDER_EEVEE"
 
 
 def parse_args():
@@ -105,7 +169,7 @@ def setup_scene(args):
       for device in prefs.preferences.devices:
         device.use = True
   else:
-    scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    scene.render.engine = _eevee_engine_name()
 
   # Resolution
   scene.render.resolution_x = args.width
@@ -144,17 +208,12 @@ def import_meshes(manifest_path: str):
       print(f"WARNING: mesh not found: {mesh_path}", file=sys.stderr)
       continue
 
-    ext = os.path.splitext(mesh_path)[1].lower()
-    if ext == ".stl":
-      bpy.ops.import_mesh.stl(filepath=mesh_path)
-    elif ext == ".obj":
-      # Blender's OBJ importer auto-resolves sibling .mtl files
-      bpy.ops.wm.obj_import(filepath=mesh_path)
-    else:
-      print(f"WARNING: unsupported mesh format: {ext} for {link_name}", file=sys.stderr)
+    try:
+      obj = _import_mesh_file(mesh_path)
+    except (ValueError, RuntimeError) as e:
+      print(f"WARNING: could not import mesh for {link_name}: {e}", file=sys.stderr)
       continue
 
-    obj = bpy.context.selected_objects[-1]
     obj.name = link_name
     obj.rotation_mode = 'QUATERNION'
     objects[link_name] = obj
@@ -164,15 +223,7 @@ def import_meshes(manifest_path: str):
 
 def import_tool_mesh(mesh_path: str, object_name: str):
   """Import the tool object mesh."""
-  ext = os.path.splitext(mesh_path)[1].lower()
-  if ext == ".stl":
-    bpy.ops.import_mesh.stl(filepath=mesh_path)
-  elif ext == ".obj":
-    bpy.ops.wm.obj_import(filepath=mesh_path)
-  else:
-    raise ValueError(f"Unsupported format: {ext}")
-
-  obj = bpy.context.selected_objects[-1]
+  obj = _import_mesh_file(mesh_path)
   obj.name = f"tool_{object_name}"
   obj.rotation_mode = 'QUATERNION'
   return obj

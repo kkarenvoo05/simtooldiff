@@ -58,6 +58,8 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
     cmd += ["--render-width", str(args.render_width)]
   if args.render_height is not None:
     cmd += ["--render-height", str(args.render_height)]
+  if args.renderer == "blender":
+    cmd += ["--engine", args.engine, "--samples", str(args.samples)]
   if args.video_dir is not None:
     cmd += ["--video-dir", str(args.video_dir / spec.object_name)]
 
@@ -270,7 +272,8 @@ def run_worker(args) -> None:
       manifest_path=_manifest_path,
       camera_path=_camera_path,
       tool_mesh_path=tool_mesh_path,
-      engine=getattr(args, "engine", "cycles"),
+      engine=args.engine,
+      samples=args.samples,
     )
   else:
     raise ValueError(f"Unknown renderer: {args.renderer}")
@@ -447,6 +450,10 @@ def parse_args() -> argparse.Namespace:
   p.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
   p.add_argument("--checkpoint", type=Path, required=True)
   p.add_argument("--renderer", choices=("stub", "isaacgym", "blender"), default="stub")
+  p.add_argument("--engine", choices=("cycles", "eevee"), default="cycles",
+                 help="Blender render engine (only used with --renderer blender)")
+  p.add_argument("--samples", type=int, default=64,
+                 help="Cycles render samples (only used with --renderer blender)")
   p.add_argument("--split", choices=("train", "ood"), default="train")
   p.add_argument("--episodes-per-object", type=int, default=32)
   p.add_argument("--num-envs", type=int, default=8)

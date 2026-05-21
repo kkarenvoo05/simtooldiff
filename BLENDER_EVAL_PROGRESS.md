@@ -57,18 +57,47 @@ renderer shapes (5), serialization boundary (7), success criteria (10).
 - `--renderer isaacgym`: uses IsaacGym's camera, should match `eval_diffusion_policy.py`
   exactly for A/B parity
 - `--renderer blender`: fully wired -- launches Blender subprocess, sends poses via FIFO,
-  receives rendered image paths. Requires Blender binary + `.blend` scene template.
+  receives rendered image paths. **The renderer half is now VERIFIED** (see below).
+
+## Verified (open-loop, no IsaacGym needed)
+
+`blender_eval/open_loop_smoke_test.py` was run on **Blender 4.2.9 LTS (headless, Cycles CPU)**.
+It builds the mesh manifest from the real URDF, computes a zero-pose forward-kinematics robot
+configuration, and drives the real `BlenderRenderer` IPC. Result: **all 36 robot STL meshes +
+the tool OBJ import, the camera configures, and Cycles renders a 256x192 frame** returned over
+the FIFO (1012 unique colors). The rendered robot is upright and correctly framed, which
+validates the coordinate-frame conversion (Z-up, xyzw->wxyz) and the camera look-at math.
+Re-run it on any machine with Blender:
+
+```bash
+python blender_eval/open_loop_smoke_test.py --blender /path/to/blender
+```
+
+### Bugs fixed during verification
+
+1. **`--engine` plumbing** in `eval_blender.py`: the flag was read via `getattr` in the worker
+   but never defined in `parse_args()` nor forwarded by the driver, so `--engine eevee` / custom
+   `--samples` were impossible. Now defined and threaded driver -> worker -> `BlenderRenderer`.
+2. **Blender 4.x importer API** in `blender_render_script.py`: used `bpy.ops.import_mesh.stl`
+   (legacy add-on, removed in 4.2) and `BLENDER_EEVEE_NEXT` (4.2+ only). Now uses a robust
+   `_import_mesh_file()` that prefers `bpy.ops.wm.stl_import` with a legacy fallback, captures
+   the imported object by set-difference (not fragile `selected_objects[-1]`), and picks the
+   EEVEE engine name valid for the running version. Robot meshes are STL, so this was on the
+   critical path.
 
 ## What's NOT done yet
 
 1. **A/B parity test** (`--renderer isaacgym` vs `eval_diffusion_policy.py`) -- needs a
-   GPU-compatible machine (not Blackwell + Python 3.8).
-2. **Blender installation** -- no `blender` binary on the current box.
-3. **`.blend` scene template** -- placeholder lighting exists; needs HDRI, PBR materials,
-   matched camera framing. This is GUI work.
-4. **Open-loop render sanity check** -- replay ~10 frames in Blender, eyeball the GIF to
-   confirm axis conventions and mesh placement. Must pass before trusting closed-loop results.
-5. **Photorealistic sim-to-sim comparison** -- clean vs NSCA policies under Blender rendering.
+   GPU-compatible machine (not Blackwell + Python 3.8). Still the critical gate before any
+   closed-loop number is trusted.
+2. **`.blend` scene template** -- placeholder single-sun lighting exists and renders; needs
+   HDRI, PBR materials, and the real training-camera FOV (smoke test used a placeholder 58 deg;
+   eval reads `DATASET_CAMERA_HORIZONTAL_FOV` from stage5). This is GUI work.
+3. **Closed-loop render sanity check against a REAL rollout** -- replay ~10 frames of an
+   already-collected rollout in Blender, eyeball the GIF. The open-loop smoke test validates the
+   pipeline and axis conventions at zero pose, but a real articulated rollout (bent arm, grasping
+   hand) must still be eyeballed before trusting closed-loop results.
+4. **Photorealistic sim-to-sim comparison** -- clean vs NSCA policies under Blender rendering.
 
 ---
 
