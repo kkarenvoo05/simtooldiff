@@ -36,6 +36,14 @@ from stage5_multi_object_driver import _split, ObjectSpec  # noqa: E402
 
 # ----------------------------- driver -----------------------------------------
 
+def _first_non_none(per_object, key):
+  for result in per_object:
+    value = result.get(key)
+    if value is not None:
+      return value
+  return None
+
+
 def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
   cmd = [
     sys.executable, str(Path(__file__).resolve()),
@@ -117,6 +125,12 @@ def run_driver(args) -> None:
           "task_name": spec.task_name,
           "renderer": args.renderer,
           "blend_file": str(args.blend_file) if args.blend_file is not None else None,
+          "lighting_preset": args.lighting_preset,
+          "engine": args.engine if args.renderer == "blender" else None,
+          "samples": args.samples if args.renderer == "blender" else None,
+          "cycles_device": args.cycles_device if args.renderer == "blender" else None,
+          "render_width": args.render_width,
+          "render_height": args.render_height,
           "attempted": 0,
           "succeeded": 0,
           "success_rate": None,
@@ -141,8 +155,14 @@ def run_driver(args) -> None:
     "num_envs": args.num_envs,
     "xy_range": args.xy_range,
     "horizon": args.horizon,
-    "render_width": args.render_width,
-    "render_height": args.render_height,
+    "render_width": (
+      args.render_width if args.render_width is not None
+      else _first_non_none(per_object, "render_width")
+    ),
+    "render_height": (
+      args.render_height if args.render_height is not None
+      else _first_non_none(per_object, "render_height")
+    ),
     "video_dir": str(args.video_dir) if args.video_dir is not None else None,
     "overall_success_rate": overall,
     "total_attempted": total_attempted,
