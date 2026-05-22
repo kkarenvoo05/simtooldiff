@@ -99,6 +99,9 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
 
 
 def run_driver(args) -> None:
+  _apply_photoreal_defaults(args)
+  _apply_driver_defaults(args)
+
   specs = _split(args.split)
   print(
     f"[eval-driver] split={args.split} renderer={args.renderer} "
@@ -600,7 +603,6 @@ def main():
   if args.worker:
     run_worker(args)
   else:
-    _apply_driver_defaults(args)
     run_driver(args)
 
 

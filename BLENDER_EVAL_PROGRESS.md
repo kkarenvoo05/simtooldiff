@@ -51,7 +51,7 @@ blender_eval/
 ## Test status
 
 ```
-89 passed
+90 passed
 ```
 
 Tests cover: quaternion math, camera params, URDF manifest + collapse logic,
