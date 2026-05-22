@@ -43,8 +43,10 @@ DEFAULT_HDRI_PATH = os.path.join(
 USE_MOTION_BLUR = False
 USE_DOF = False
 CYCLES_SEED = 0
-CYCLES_ADAPTIVE_THRESHOLD = 0.008
-CYCLES_MIN_SAMPLES = 32
+CYCLES_ADAPTIVE_THRESHOLD = 0.005
+CYCLES_MIN_SAMPLES = 48
+LIGHTING_PRESET_ENV = "SIMTOOLDIFF_LIGHTING_PRESET"
+DEFAULT_LIGHTING_PRESET = "reference_area"
 _DIAGNOSTICS_PRINTED = False
 
 # ---- Blender imports (only available inside blender --python) ----
@@ -189,6 +191,24 @@ def _add_shader_bevel(mat, bsdf, radius):
   mat.node_tree.links.new(bevel.outputs["Normal"], bsdf.inputs["Normal"])
 
 
+def _add_base_color_variation(mat, bsdf, color_low, color_high, scale=24.0, detail=8.0):
+  if "Base Color" not in bsdf.inputs:
+    return
+  nodes = mat.node_tree.nodes
+  links = mat.node_tree.links
+  noise = nodes.new(type="ShaderNodeTexNoise")
+  noise.inputs["Scale"].default_value = scale
+  noise.inputs["Detail"].default_value = detail
+  noise.inputs["Roughness"].default_value = 0.58
+  ramp = nodes.new(type="ShaderNodeValToRGB")
+  ramp.color_ramp.elements[0].position = 0.18
+  ramp.color_ramp.elements[0].color = color_low
+  ramp.color_ramp.elements[1].position = 1.0
+  ramp.color_ramp.elements[1].color = color_high
+  links.new(noise.outputs["Fac"], ramp.inputs["Fac"])
+  links.new(ramp.outputs["Color"], bsdf.inputs["Base Color"])
+
+
 def _make_material(
   name,
   rgba,
@@ -285,11 +305,11 @@ def _make_wood_material(name):
       diffuse_path,
       roughness_path,
       normal_path,
-      roughness=0.52,
-      specular=0.30,
-      coat=0.04,
-      normal_strength=0.16,
-      texture_scale=(1.5, 1.5, 1.0),
+      roughness=0.50,
+      specular=0.34,
+      coat=0.035,
+      normal_strength=0.23,
+      texture_scale=(2.35, 2.35, 1.0),
     )
 
   mat = _make_material(
@@ -570,6 +590,11 @@ def _print_render_diagnostics(scene, robot_objects, tool_object):
     for obj in bpy.data.objects
     if obj.type == "LIGHT"
   ]
+  print(
+    f"DIAG_LIGHTING_PRESET {scene.get('simtooldiff_lighting_preset', 'template')}",
+    file=sys.stderr,
+    flush=True,
+  )
   print(f"DIAG_LIGHTS {lights}", file=sys.stderr, flush=True)
   print(
     f"DIAG_OBJECT_NAMES {sorted(obj.name for obj in bpy.data.objects)}",
@@ -590,15 +615,26 @@ def _print_render_diagnostics(scene, robot_objects, tool_object):
 def _robot_material(link_name, rgba):
   """Choose PBR-ish params for URDF robot colors."""
   if link_name.startswith("iiwa14_link_") and rgba[0] > 0.9 and rgba[1] > 0.25:
-    return _make_material(
+    mat = _make_material(
       f"urdf_{link_name}_material",
-      (0.78, 0.29, 0.030, rgba[3]),
-      roughness=0.38,
+      (0.75, 0.29, 0.035, rgba[3]),
+      roughness=0.40,
       specular=0.50,
-      coat=0.26,
-      roughness_variation=0.06,
+      coat=0.22,
+      roughness_variation=0.08,
       bevel_radius=0.0012,
     )
+    bsdf = mat.node_tree.nodes.get("Principled BSDF")
+    if bsdf:
+      _add_base_color_variation(
+        mat,
+        bsdf,
+        (0.63, 0.23, 0.025, rgba[3]),
+        (0.86, 0.35, 0.045, rgba[3]),
+        scale=18.0,
+        detail=6.0,
+      )
+    return mat
   if link_name.startswith("iiwa14_link_") and max(rgba[:3]) < 0.45:
     return _make_material(
       f"urdf_{link_name}_material",
@@ -622,12 +658,12 @@ def _apply_claw_hammer_materials(obj):
   """Assign simple head/handle PBR materials to the single imported hammer mesh."""
   steel = _make_material(
     "claw_hammer_head_steel",
-    (0.58, 0.57, 0.54, 1.0),
-    roughness=0.25,
+    (0.55, 0.54, 0.51, 1.0),
+    roughness=0.28,
     metallic=1.0,
     specular=0.50,
-    roughness_variation=0.06,
-    bevel_radius=0.0005,
+    roughness_variation=0.10,
+    bevel_radius=0.0008,
   )
   rubber = _make_material(
     "claw_hammer_handle_rubber",
@@ -638,6 +674,26 @@ def _apply_claw_hammer_materials(obj):
     roughness_variation=0.08,
     bevel_radius=0.0004,
   )
+  steel_bsdf = steel.node_tree.nodes.get("Principled BSDF")
+  if steel_bsdf:
+    _add_base_color_variation(
+      steel,
+      steel_bsdf,
+      (0.38, 0.37, 0.35, 1.0),
+      (0.72, 0.70, 0.66, 1.0),
+      scale=75.0,
+      detail=10.0,
+    )
+  rubber_bsdf = rubber.node_tree.nodes.get("Principled BSDF")
+  if rubber_bsdf:
+    _add_base_color_variation(
+      rubber,
+      rubber_bsdf,
+      (0.008, 0.008, 0.007, 1.0),
+      (0.035, 0.033, 0.030, 1.0),
+      scale=48.0,
+      detail=8.0,
+    )
 
   obj.data.materials.clear()
   obj.data.materials.append(rubber)
@@ -792,6 +848,149 @@ def _setup_clean_eval_lighting(target=(0.0, 0.0, 0.45)):
     energy=22.0,
     size=2.00,
   )
+
+
+def _clear_scene_lights():
+  for obj in list(bpy.data.objects):
+    if obj.type == "LIGHT":
+      bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def _setup_reference_area_lighting():
+  """Area-light-dominant lab setup, with HDRI only as weak reflection fill."""
+  target = (0.0, 0.03, 0.62)
+  _add_area_light(
+    "OverheadStrip",
+    location=(0.10, -0.32, 1.48),
+    target=target,
+    energy=68.0,
+    size=1.45,
+    size_y=0.18,
+  )
+  _add_area_light(
+    "CameraSoftbox",
+    location=(-0.85, -1.22, 1.20),
+    target=(0.0, 0.02, 0.60),
+    energy=38.0,
+    size=1.10,
+    size_y=0.75,
+  )
+  _add_area_light(
+    "RearRim",
+    location=(0.82, 0.76, 1.20),
+    target=(0.02, 0.06, 0.66),
+    energy=18.0,
+    size=0.72,
+  )
+  _add_area_light(
+    "ShadowFill",
+    location=(1.18, -0.92, 0.92),
+    target=(0.0, 0.04, 0.54),
+    energy=4.0,
+    size=2.40,
+  )
+
+
+def _setup_softbox_grid_lighting():
+  """Softer product-lighting variant: broad key plus strip and rim."""
+  _add_area_light(
+    "LargeLeftSoftbox",
+    location=(-1.08, -1.18, 1.34),
+    target=(0.0, 0.02, 0.62),
+    energy=66.0,
+    size=1.45,
+    size_y=0.90,
+  )
+  _add_area_light(
+    "TopStrip",
+    location=(0.05, -0.25, 1.52),
+    target=(0.0, 0.02, 0.62),
+    energy=42.0,
+    size=1.55,
+    size_y=0.20,
+  )
+  _add_area_light(
+    "RightFill",
+    location=(1.25, -0.80, 0.95),
+    target=(0.0, 0.02, 0.54),
+    energy=6.0,
+    size=2.60,
+  )
+  _add_area_light(
+    "BackEdge",
+    location=(-0.25, 0.95, 1.24),
+    target=(0.02, 0.04, 0.66),
+    energy=16.0,
+    size=0.82,
+  )
+
+
+def _setup_spot_accent_lighting():
+  """Sharper variant with an area key and controlled spot accents."""
+  _add_area_light(
+    "TopStrip",
+    location=(0.08, -0.28, 1.50),
+    target=(0.0, 0.04, 0.62),
+    energy=38.0,
+    size=1.35,
+    size_y=0.18,
+  )
+  _add_area_light(
+    "FocusedKey",
+    location=(0.82, -1.02, 1.42),
+    target=(0.0, 0.04, 0.62),
+    energy=64.0,
+    size=0.52,
+    size_y=0.34,
+  )
+  _add_area_light(
+    "BroadFill",
+    location=(-1.22, -0.74, 1.05),
+    target=(0.0, 0.04, 0.55),
+    energy=6.0,
+    size=2.20,
+  )
+  _add_area_light(
+    "RearEdge",
+    location=(0.15, 0.92, 1.15),
+    target=(0.02, 0.05, 0.65),
+    energy=16.0,
+    size=0.70,
+  )
+  _add_spot_light(
+    "ToolSpot",
+    location=(-0.48, -1.05, 1.18),
+    target=(0.02, 0.05, 0.60),
+    energy=34.0,
+    size=0.78,
+    blend=0.84,
+  )
+
+
+def _setup_lighting_preset(preset):
+  """Install a deterministic lighting preset into the current scene."""
+  preset = (preset or DEFAULT_LIGHTING_PRESET).strip().lower()
+  _clear_scene_lights()
+
+  if preset == "clean_key_fill":
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.28, visible_to_camera=False)
+    _setup_clean_eval_lighting()
+  elif preset == "reference_area":
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.02, visible_to_camera=False)
+    _setup_reference_area_lighting()
+  elif preset == "softbox_grid":
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.02, visible_to_camera=False)
+    _setup_softbox_grid_lighting()
+  elif preset == "spot_accent":
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.015, visible_to_camera=False)
+    _setup_spot_accent_lighting()
+  else:
+    raise RuntimeError(
+      f"Unknown lighting preset {preset!r}. Expected one of: "
+      "clean_key_fill, reference_area, softbox_grid, spot_accent."
+    )
+  bpy.context.scene["simtooldiff_lighting_preset"] = preset
+  return preset
 
 
 def _set_color_management(scene):
@@ -1003,15 +1202,18 @@ def setup_scene(args):
     bpy.ops.wm.open_mainfile(filepath=args.blend_file)
     scene = bpy.context.scene
     using_template = True
+    if os.environ.get(LIGHTING_PRESET_ENV):
+      _setup_lighting_preset(os.environ[LIGHTING_PRESET_ENV])
   else:
     # Clear default scene
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
 
-    # The HDRI provides low-strength ambient fill/reflections only. A clean
-    # physical wall is visible to the policy camera instead of the busy HDRI.
-    _setup_world_hdri(_resolve_hdri_path(), strength=0.28, visible_to_camera=False)
-    _setup_clean_eval_lighting()
+    # The HDRI provides weak reflection fill only. Area lights do the visible
+    # shadow shaping so the render does not inherit the HDRI's flat ambient look.
+    _setup_lighting_preset(
+      os.environ.get(LIGHTING_PRESET_ENV, DEFAULT_LIGHTING_PRESET)
+    )
 
   # Render engine
   if args.engine == "cycles":
@@ -1019,11 +1221,11 @@ def setup_scene(args):
     scene.cycles.samples = args.samples
     scene.cycles.use_denoising = True
     scene.cycles.seed = CYCLES_SEED
-    scene.cycles.max_bounces = 10
-    scene.cycles.diffuse_bounces = 5
-    scene.cycles.glossy_bounces = 6
-    scene.cycles.transmission_bounces = 8
-    scene.cycles.transparent_max_bounces = 8
+    scene.cycles.max_bounces = 12
+    scene.cycles.diffuse_bounces = 6
+    scene.cycles.glossy_bounces = 8
+    scene.cycles.transmission_bounces = 12
+    scene.cycles.transparent_max_bounces = 12
     scene.cycles.sample_clamp_indirect = 10.0
     scene.cycles.blur_glossy = 0.35
     if hasattr(scene.cycles, "use_adaptive_sampling"):

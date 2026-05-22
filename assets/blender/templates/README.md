@@ -9,19 +9,27 @@ You may edit these in Blender and save the `.blend`:
 
 - World/HDRI environment. The HDRI should stay hidden from camera rays and
   should act as low-strength ambient fill/reflection only.
-- `Key` and `Fill` static area lights.
+- Static area lights. The default template uses the `reference_area` preset:
+  `OverheadStrip`, `CameraSoftbox`, `RearRim`, and `ShadowFill`.
 - Static background furniture, walls, floor, rear bench, and non-physics props.
 - Static scene materials for the table, floor, block, bench, walls, and lights.
 - Procedural/static material node graphs for objects already in the template.
 
 The intended lighting design is deliberately simple:
 
-- `Key`: rectangular area light, roughly 0.5 m x 0.35 m, high/front/side,
-  dominant energy. This is the light that casts the readable shadow.
-- `Fill`: large, weak area light on the opposite side, about 1/5 to 1/6 of the
-  key strength. This lifts shadow cores without flattening the image.
-- HDRI: strength around 0.25 to 0.3, hidden from camera. It should contribute ambient
-  color and reflections but not become the visible background or dominant light.
+- `OverheadStrip`: rectangular area light above/front of the workcell. This
+  gives the reference-style lab strip-light reflection and main downward shape.
+- `CameraSoftbox`: front/side softbox that lights the arm face without making
+  the whole scene ambient.
+- `RearRim`: weak rear/side edge light for the hammer and arm silhouette.
+- `ShadowFill`: very large, dim fill. It only lifts shadow cores.
+- HDRI: strength around 0.02 to 0.05, hidden from camera. It should contribute
+  subtle reflection color only, not become the visible background or dominant
+  light source.
+
+For scripted comparisons, set `SIMTOOLDIFF_LIGHTING_PRESET` before launching
+Blender. Supported values are `reference_area`, `softbox_grid`, `spot_accent`,
+and `clean_key_fill`.
 
 ## What Runtime Owns
 
