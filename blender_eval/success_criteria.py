@@ -1,7 +1,8 @@
-"""Success criteria for evaluation.
+"""Regression-test mirror of the Stage 5 pickup success criterion.
 
-Single source of truth for success functions. All eval scripts should import
-from here rather than defining their own criteria.
+Runtime evaluators import stage5_collect_dataset._episode_pickup_success()
+directly so photoreal evaluation cannot drift from the original checkpoint eval.
+This helper remains useful for small unit tests that do not import IsaacGym.
 """
 
 from typing import List

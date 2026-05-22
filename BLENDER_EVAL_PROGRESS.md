@@ -13,7 +13,7 @@ blender_eval/
   pose_conversion.py       — quaternion xyzw↔wxyz, 4x4 transforms, URDF origin helper
   camera_params.py         — IsaacGym HFOV -> Blender focal length + look-at rotation
   asset_manifest.py        — URDF parsing: mesh paths, collapsed-link offsets, visual origins
-  success_criteria.py      — pickup_success() shared across all eval scripts
+  success_criteria.py      — regression-test mirror of the Stage 5 pickup metric
   state_extraction.py      — reads rigid_body_states, composes collapsed-link poses
   renderer_interface.py    — Renderer protocol, StubRenderer, IsaacGymRenderer
   blender_renderer.py      — BlenderRenderer: persistent subprocess with FIFO-based IPC
@@ -43,13 +43,15 @@ blender_eval/
 - **Photoreal template**: `--renderer blender` defaults to
   `assets/blender/templates/simtool_lab.blend`, so the driver and worker use the
   same static scene unless `--blend-file` is explicitly overridden.
-- **Success criterion**: isolated in `success_criteria.py`. Same defaults as
-  `stage5_collect_dataset._episode_pickup_success()`.
+- **Success criterion**: the runtime worker imports
+  `stage5_collect_dataset._episode_pickup_success()` directly, matching
+  `scripts/eval_diffusion_policy.py`. `success_criteria.py` is kept as a
+  regression-test mirror of that metric.
 
 ## Test status
 
 ```
-88 passed
+89 passed
 ```
 
 Tests cover: quaternion math, camera params, URDF manifest + collapse logic,

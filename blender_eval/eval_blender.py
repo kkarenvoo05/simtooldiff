@@ -205,10 +205,10 @@ def run_worker(args) -> None:
   from stage5_collect_dataset import (
     _make_env,
     _load_nominal_start_pose,
+    _episode_pickup_success,
     N_ACT,
     LIFT_HEIGHT_M,
   )
-  from blender_eval.success_criteria import pickup_success
   from blender_eval.renderer_interface import StubRenderer, IsaacGymRenderer
   from blender_eval.blender_renderer import BlenderRenderer
   from blender_eval.asset_manifest import get_robot_mesh_manifest, get_object_mesh_path
@@ -447,7 +447,7 @@ def run_worker(args) -> None:
           if attempted >= target:
             break
           attempted += 1
-          ok = pickup_success(
+          ok = _episode_pickup_success(
             object_zs=per_env_object_zs[env_i],
             object_start_z=per_env_start_z[env_i],
             goal_z=goal_z,
