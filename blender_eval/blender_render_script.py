@@ -257,6 +257,51 @@ def _make_material(
   return mat
 
 
+def _enhance_existing_material(
+  mat,
+  name,
+  *,
+  roughness=0.55,
+  metallic=0.0,
+  specular=0.35,
+  coat=0.0,
+  roughness_variation=0.04,
+  bump_strength=0.0,
+  bump_distance=0.003,
+  bump_scale=80.0,
+):
+  """Keep imported texture nodes but replace the weak OBJ material response."""
+  if mat is None:
+    return _make_material(
+      name,
+      (0.55, 0.55, 0.55, 1.0),
+      roughness=roughness,
+      metallic=metallic,
+      specular=specular,
+      coat=coat,
+      roughness_variation=roughness_variation,
+    )
+  mat.name = name
+  mat.use_nodes = True
+  bsdf = mat.node_tree.nodes.get("Principled BSDF")
+  if bsdf:
+    _set_principled_input(bsdf, ("Roughness",), roughness)
+    _set_principled_input(bsdf, ("Metallic",), metallic)
+    _set_principled_input(bsdf, ("Specular IOR Level", "Specular"), specular)
+    _set_principled_input(bsdf, ("Coat Weight", "Clearcoat"), coat)
+    _add_roughness_variation(mat, bsdf, roughness, roughness_variation)
+    if bump_strength > 0.0:
+      _add_noise_bump(
+        mat,
+        bsdf,
+        scale=bump_scale,
+        detail=10.0,
+        strength=bump_strength,
+        distance=bump_distance,
+      )
+  return mat
+
+
 def _make_textured_pbr_material(
   name,
   diffuse_path,
@@ -317,7 +362,15 @@ def _make_textured_pbr_material(
   return mat
 
 
-def _make_wood_material(name):
+def _make_wood_material(
+  name,
+  *,
+  roughness=0.50,
+  specular=0.34,
+  coat=0.035,
+  normal_strength=0.23,
+  texture_scale=(2.35, 2.35, 1.0),
+):
   """Create a procedural light-oak material with grain and normal variation."""
   diffuse_path = _asset_path("textures", "oak_veneer_01", "oak_veneer_01_diff_1k.jpg")
   roughness_path = _asset_path("textures", "oak_veneer_01", "oak_veneer_01_rough_1k.jpg")
@@ -328,20 +381,20 @@ def _make_wood_material(name):
       diffuse_path,
       roughness_path,
       normal_path,
-      roughness=0.50,
-      specular=0.34,
-      coat=0.035,
-      normal_strength=0.23,
-      texture_scale=(2.35, 2.35, 1.0),
+      roughness=roughness,
+      specular=specular,
+      coat=coat,
+      normal_strength=normal_strength,
+      texture_scale=texture_scale,
     )
 
   mat = _make_material(
     name,
     (0.60, 0.44, 0.27, 1.0),
-    roughness=0.64,
+    roughness=max(roughness, 0.58),
     metallic=0.0,
-    specular=0.28,
-    coat=0.02,
+    specular=specular,
+    coat=coat,
     roughness_variation=0.08,
   )
   nodes = mat.node_tree.nodes
@@ -685,25 +738,15 @@ def _robot_material(link_name, rgba):
   )
 
 
-def _apply_claw_hammer_materials(obj):
-  """Assign simple head/handle PBR materials to the single imported hammer mesh."""
+def _make_steel_material(name, base=(0.55, 0.54, 0.51, 1.0), roughness=0.28):
   steel = _make_material(
-    "claw_hammer_head_steel",
-    (0.55, 0.54, 0.51, 1.0),
-    roughness=0.28,
+    name,
+    base,
+    roughness=roughness,
     metallic=1.0,
     specular=0.50,
     roughness_variation=0.10,
     bevel_radius=0.0008,
-  )
-  rubber = _make_material(
-    "claw_hammer_handle_rubber",
-    (0.018, 0.017, 0.015, 1.0),
-    roughness=0.62,
-    metallic=0.0,
-    specular=0.28,
-    roughness_variation=0.08,
-    bevel_radius=0.0004,
   )
   steel_bsdf = steel.node_tree.nodes.get("Principled BSDF")
   if steel_bsdf:
@@ -715,29 +758,270 @@ def _apply_claw_hammer_materials(obj):
       scale=75.0,
       detail=10.0,
     )
-  rubber_bsdf = rubber.node_tree.nodes.get("Principled BSDF")
-  if rubber_bsdf:
+    _add_noise_bump(steel, steel_bsdf, scale=120.0, strength=0.004, distance=0.002)
+  return steel
+
+
+def _make_rubber_material(name, base=(0.018, 0.017, 0.015, 1.0), roughness=0.64):
+  rubber = _make_material(
+    name,
+    base,
+    roughness=roughness,
+    metallic=0.0,
+    specular=0.24,
+    roughness_variation=0.11,
+    bevel_radius=0.0005,
+  )
+  bsdf = rubber.node_tree.nodes.get("Principled BSDF")
+  if bsdf:
     _add_base_color_variation(
       rubber,
-      rubber_bsdf,
-      (0.008, 0.008, 0.007, 1.0),
-      (0.035, 0.033, 0.030, 1.0),
+      bsdf,
+      tuple(max(0.0, c * 0.45) for c in base[:3]) + (base[3],),
+      tuple(min(1.0, c * 1.65 + 0.01) for c in base[:3]) + (base[3],),
       scale=48.0,
       detail=8.0,
     )
+    _add_noise_bump(rubber, bsdf, scale=90.0, strength=0.010, distance=0.004)
+  return rubber
 
-  obj.data.materials.clear()
-  obj.data.materials.append(rubber)
-  obj.data.materials.append(steel)
+
+def _make_plastic_material(name, base, roughness=0.48, coat=0.08):
+  mat = _make_material(
+    name,
+    base,
+    roughness=roughness,
+    metallic=0.0,
+    specular=0.34,
+    coat=coat,
+    roughness_variation=0.08,
+    bevel_radius=0.0004,
+  )
+  bsdf = mat.node_tree.nodes.get("Principled BSDF")
+  if bsdf:
+    _add_noise_bump(mat, bsdf, scale=70.0, strength=0.004, distance=0.002)
+  return mat
+
+
+def _make_bristle_material(name, base=(0.72, 0.62, 0.36, 1.0)):
+  mat = _make_material(
+    name,
+    base,
+    roughness=0.88,
+    metallic=0.0,
+    specular=0.10,
+    roughness_variation=0.16,
+    bevel_radius=0.0002,
+  )
+  bsdf = mat.node_tree.nodes.get("Principled BSDF")
+  if bsdf:
+    _add_base_color_variation(
+      mat,
+      bsdf,
+      tuple(max(0.0, c * 0.70) for c in base[:3]) + (base[3],),
+      tuple(min(1.0, c * 1.25) for c in base[:3]) + (base[3],),
+      scale=140.0,
+      detail=12.0,
+    )
+    _add_noise_bump(mat, bsdf, scale=180.0, strength=0.020, distance=0.006)
+  return mat
+
+
+def _mesh_bounds(obj):
   verts = obj.data.vertices
+  mins = [min(v.co[i] for v in verts) for i in range(3)]
+  maxs = [max(v.co[i] for v in verts) for i in range(3)]
+  spans = [max(maxs[i] - mins[i], 1e-6) for i in range(3)]
+  return mins, maxs, spans
+
+
+def _poly_center(obj, poly):
+  verts = obj.data.vertices
+  return sum(
+    (verts[i].co for i in poly.vertices), mathutils.Vector((0.0, 0.0, 0.0))
+  ) / len(poly.vertices)
+
+
+def _x_norm(center, bounds):
+  mins, _, spans = bounds
+  return (center.x - mins[0]) / spans[0]
+
+
+def _z_norm(center, bounds):
+  mins, _, spans = bounds
+  return (center.z - mins[2]) / spans[2]
+
+
+def _replace_material_slots(obj, materials):
+  obj.data.materials.clear()
+  for mat in materials:
+    obj.data.materials.append(mat)
+
+
+def _apply_claw_hammer_materials(obj):
+  """Assign head/handle PBR materials to the single imported hammer mesh."""
+  rubber = _make_rubber_material("claw_hammer_handle_rubber")
+  steel = _make_steel_material("claw_hammer_head_steel")
+  _replace_material_slots(obj, [rubber, steel])
+  bounds = _mesh_bounds(obj)
   for poly in obj.data.polygons:
-    center = sum(
-      (verts[i].co for i in poly.vertices), mathutils.Vector((0.0, 0.0, 0.0))
-    ) / len(poly.vertices)
+    center = _poly_center(obj, poly)
     # The claw hammer OBJ is a single mesh. The head/claw geometry occupies the
     # wide end and the handle stays comparatively narrow through the middle.
-    is_head = center.x > 0.105 or abs(center.y) > 0.022 or center.x < -0.035
+    x = _x_norm(center, bounds)
+    is_head = x > 0.80 or abs(center.y) > 0.022 or x < 0.10
     poly.material_index = 1 if is_head else 0
+
+
+def _apply_mallet_materials(obj, imported):
+  head = _make_rubber_material("mallet_head_rubber", (0.025, 0.030, 0.035, 1.0), 0.70)
+  handle = _enhance_existing_material(
+    imported,
+    "mallet_handle_textured_plastic",
+    roughness=0.50,
+    specular=0.30,
+    coat=0.04,
+    roughness_variation=0.08,
+    bump_strength=0.005,
+  )
+  _replace_material_slots(obj, [handle, head])
+  bounds = _mesh_bounds(obj)
+  for poly in obj.data.polygons:
+    center = _poly_center(obj, poly)
+    x = _x_norm(center, bounds)
+    poly.material_index = 1 if x < 0.30 or (x < 0.42 and abs(center.y) > 0.026) else 0
+
+
+def _apply_screwdriver_materials(obj, object_name, imported):
+  handle = _enhance_existing_material(
+    imported,
+    f"{object_name}_handle_textured_plastic",
+    roughness=0.50,
+    specular=0.32,
+    coat=0.08,
+    roughness_variation=0.08,
+    bump_strength=0.004,
+  )
+  shaft = _make_steel_material(f"{object_name}_brushed_steel", roughness=0.24)
+  tip = _make_steel_material(f"{object_name}_dark_tip", (0.20, 0.20, 0.19, 1.0), 0.30)
+  _replace_material_slots(obj, [handle, shaft, tip])
+  bounds = _mesh_bounds(obj)
+  for poly in obj.data.polygons:
+    x = _x_norm(_poly_center(obj, poly), bounds)
+    poly.material_index = 2 if x > 0.92 else 1 if x > 0.38 else 0
+
+
+def _apply_marker_materials(obj, object_name, imported):
+  # Marker labels and cap colors live in the source texture, so preserve them.
+  mat = _enhance_existing_material(
+    imported,
+    f"{object_name}_printed_plastic",
+    roughness=0.43,
+    specular=0.36,
+    coat=0.14,
+    roughness_variation=0.05,
+    bump_strength=0.003,
+    bump_scale=95.0,
+  )
+  _replace_material_slots(obj, [mat])
+
+
+def _apply_eraser_materials(obj, object_name, imported):
+  body = _enhance_existing_material(
+    imported,
+    f"{object_name}_matte_rubber_texture",
+    roughness=0.76,
+    specular=0.16,
+    coat=0.0,
+    roughness_variation=0.10,
+    bump_strength=0.010,
+    bump_scale=110.0,
+  )
+  if object_name == "handle_eraser":
+    bristles = _make_bristle_material("handle_eraser_bristles", (0.72, 0.66, 0.34, 1.0))
+    _replace_material_slots(obj, [body, bristles])
+    bounds = _mesh_bounds(obj)
+    for poly in obj.data.polygons:
+      center = _poly_center(obj, poly)
+      poly.material_index = 1 if _z_norm(center, bounds) < 0.24 else 0
+  else:
+    _replace_material_slots(obj, [body])
+
+
+def _apply_brush_materials(obj, object_name, imported):
+  plastic = _enhance_existing_material(
+    imported,
+    f"{object_name}_textured_plastic",
+    roughness=0.54,
+    specular=0.30,
+    coat=0.06,
+    roughness_variation=0.08,
+    bump_strength=0.004,
+  )
+  bristle_color = (
+    (0.72, 0.63, 0.38, 1.0)
+    if object_name == "blue_brush"
+    else (0.025, 0.023, 0.021, 1.0)
+  )
+  bristles = _make_bristle_material(f"{object_name}_bristles", bristle_color)
+  _replace_material_slots(obj, [plastic, bristles])
+  bounds = _mesh_bounds(obj)
+  for poly in obj.data.polygons:
+    center = _poly_center(obj, poly)
+    x = _x_norm(center, bounds)
+    poly.material_index = 1 if x < 0.33 or (x < 0.50 and abs(center.y) > 0.035) else 0
+
+
+def _apply_spatula_materials(obj, object_name, imported):
+  handle = _enhance_existing_material(
+    imported,
+    f"{object_name}_handle_texture",
+    roughness=0.58,
+    specular=0.26,
+    coat=0.04,
+    roughness_variation=0.08,
+    bump_strength=0.004,
+  )
+  if object_name == "flat_spatula":
+    blade = _make_steel_material("flat_spatula_satin_blade", (0.46, 0.45, 0.42, 1.0), 0.34)
+  else:
+    blade = _make_rubber_material("spoon_spatula_silicone_bowl", (0.025, 0.024, 0.022, 1.0), 0.72)
+  _replace_material_slots(obj, [handle, blade])
+  bounds = _mesh_bounds(obj)
+  for poly in obj.data.polygons:
+    center = _poly_center(obj, poly)
+    x = _x_norm(center, bounds)
+    is_blade = x < 0.34 or (x < 0.46 and abs(center.y) > 0.025)
+    poly.material_index = 1 if is_blade else 0
+
+
+def _apply_tool_materials(obj, object_name):
+  imported = obj.data.materials[0] if obj.data.materials else None
+  if object_name == "claw_hammer":
+    _apply_claw_hammer_materials(obj)
+  elif object_name == "mallet_hammer":
+    _apply_mallet_materials(obj, imported)
+  elif object_name in {"long_screwdriver", "short_screwdriver"}:
+    _apply_screwdriver_materials(obj, object_name, imported)
+  elif object_name in {"sharpie_marker", "staples_marker"}:
+    _apply_marker_materials(obj, object_name, imported)
+  elif object_name in {"flat_eraser", "handle_eraser"}:
+    _apply_eraser_materials(obj, object_name, imported)
+  elif object_name in {"blue_brush", "red_brush"}:
+    _apply_brush_materials(obj, object_name, imported)
+  elif object_name in {"flat_spatula", "spoon_spatula"}:
+    _apply_spatula_materials(obj, object_name, imported)
+  else:
+    mat = _enhance_existing_material(
+      imported,
+      f"{object_name}_textured_pbr",
+      roughness=0.56,
+      specular=0.30,
+      coat=0.04,
+      roughness_variation=0.08,
+      bump_strength=0.004,
+    )
+    _replace_material_slots(obj, [mat])
 
 
 def _assign_material(obj, mat):
@@ -788,6 +1072,15 @@ def _add_cube(name, location, dimensions, mat=None, bevel=0.0, segments=2):
   if mat:
     _assign_material(obj, mat)
   return obj
+
+
+def _assign_table_box_materials(obj, top_mat, side_mat):
+  """Give the table separate top/side responses while preserving its geometry."""
+  obj.data.materials.clear()
+  obj.data.materials.append(top_mat)
+  obj.data.materials.append(side_mat)
+  for poly in obj.data.polygons:
+    poly.material_index = 0 if poly.normal.z > 0.5 else 1
 
 
 def _add_area_light(name, location, target, energy, size, size_y=None):
@@ -1171,7 +1464,22 @@ def _add_default_static_scene():
   # IsaacGym scene furniture from assets/urdf/table_narrow_nail.urdf.
   # The table actor is centered at (0, 0, TABLE_Z); the URDF box is centered
   # on that actor with size 0.475 x 0.4 x 0.3, plus a small gray nail.
-  table_mat = _make_wood_material("table_light_oak")
+  table_top_mat = _make_wood_material(
+    "table_light_oak_top",
+    roughness=0.48,
+    specular=0.34,
+    coat=0.03,
+    normal_strength=0.26,
+    texture_scale=(2.6, 2.6, 1.0),
+  )
+  table_side_mat = _make_wood_material(
+    "table_light_oak_side",
+    roughness=0.56,
+    specular=0.28,
+    coat=0.02,
+    normal_strength=0.18,
+    texture_scale=(1.2, 3.8, 1.0),
+  )
   nail_mat = _make_marble_material("table_nail_marble")
   floor_mat = _make_concrete_material(
     "lab_floor_matte", base=(0.49, 0.50, 0.47, 1.0), roughness=0.82
@@ -1186,14 +1494,15 @@ def _add_default_static_scene():
     "rear_bench_frame", (0.12, 0.13, 0.13, 1.0), roughness=0.55, metallic=0.55
   )
 
-  _add_cube(
+  table = _add_cube(
     "table",
     location=(0.0, 0.0, 0.38),
     dimensions=(0.475, 0.4, 0.3),
-    mat=table_mat,
+    mat=None,
     bevel=0.010,
     segments=4,
   )
+  _assign_table_box_materials(table, table_top_mat, table_side_mat)
   _add_cube(
     "table_nail",
     location=(-0.16, 0.06, 0.38 + 0.175),
@@ -1467,8 +1776,7 @@ def import_tool_mesh(mesh_path: str, object_name: str):
   obj.name = f"tool_{object_name}"
   obj.rotation_mode = 'QUATERNION'
   _shade_smooth(obj)
-  if object_name == "claw_hammer":
-    _apply_claw_hammer_materials(obj)
+  _apply_tool_materials(obj, object_name)
   return obj
 
 
