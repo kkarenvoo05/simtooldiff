@@ -9,7 +9,7 @@ ensure A/B parity when using --renderer isaacgym.
 Usage (driver):
     python blender_eval/eval_blender.py \\
         --checkpoint /path/to/checkpoint.ckpt \\
-        --renderer stub \\
+        --renderer blender \\
         --split train \\
         --episodes-per-object 32 \\
         --output-json data/blender_eval/eval.json
@@ -26,7 +26,11 @@ from collections import deque
 from pathlib import Path
 
 # Re-use the stage5 registry/split logic.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_BLEND_FILE = REPO_ROOT / "assets" / "blender" / "templates" / "simtool_lab.blend"
+LIGHTING_PRESET_ENV = "SIMTOOLDIFF_LIGHTING_PRESET"
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from stage5_multi_object_driver import _split, ObjectSpec  # noqa: E402
 
 
@@ -67,6 +71,8 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
     ]
     if args.blend_file is not None:
       cmd += ["--blend-file", str(args.blend_file)]
+    if args.lighting_preset is not None:
+      cmd += ["--lighting-preset", args.lighting_preset]
   if args.video_dir is not None:
     cmd += ["--video-dir", str(args.video_dir / spec.object_name)]
 
@@ -92,6 +98,9 @@ def run_driver(args) -> None:
     flush=True,
   )
   args.output_json.parent.mkdir(parents=True, exist_ok=True)
+  if args.video_dir is not None:
+    args.video_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[eval-driver] previews -> {args.video_dir}", flush=True)
 
   per_object = []
   with tempfile.TemporaryDirectory(prefix="eval_blender_") as tmpdir:
@@ -106,6 +115,11 @@ def run_driver(args) -> None:
           "object_name": spec.object_name,
           "object_category": spec.object_category,
           "task_name": spec.task_name,
+          "renderer": args.renderer,
+          "blend_file": str(args.blend_file) if args.blend_file is not None else None,
+          "attempted": 0,
+          "succeeded": 0,
+          "success_rate": None,
           "error": f"Worker exited {e.returncode}",
         }
       per_object.append(result)
@@ -115,9 +129,21 @@ def run_driver(args) -> None:
   overall = total_succeeded / max(total_attempted, 1)
 
   summary = {
+    "checkpoint": str(args.checkpoint),
     "renderer": args.renderer,
     "blend_file": str(args.blend_file) if args.blend_file is not None else None,
+    "lighting_preset": args.lighting_preset,
+    "engine": args.engine if args.renderer == "blender" else None,
+    "samples": args.samples if args.renderer == "blender" else None,
+    "cycles_device": args.cycles_device if args.renderer == "blender" else None,
     "split": args.split,
+    "episodes_per_object": args.episodes_per_object,
+    "num_envs": args.num_envs,
+    "xy_range": args.xy_range,
+    "horizon": args.horizon,
+    "render_width": args.render_width,
+    "render_height": args.render_height,
+    "video_dir": str(args.video_dir) if args.video_dir is not None else None,
     "overall_success_rate": overall,
     "total_attempted": total_attempted,
     "total_succeeded": total_succeeded,
@@ -241,6 +267,8 @@ def run_worker(args) -> None:
   render_h = args.render_height or 384
   mesh_manifest = None
   _blender_tmpdir = None
+  if args.renderer == "blender" and args.lighting_preset is not None:
+    os.environ[LIGHTING_PRESET_ENV] = args.lighting_preset
 
   if args.renderer == "stub":
     renderer = StubRenderer(env.num_envs, render_w, render_h)
@@ -449,6 +477,12 @@ def run_worker(args) -> None:
     "task_name": args.task_name,
     "renderer": args.renderer,
     "blend_file": str(args.blend_file) if args.blend_file is not None else None,
+    "lighting_preset": args.lighting_preset,
+    "engine": args.engine if args.renderer == "blender" else None,
+    "samples": args.samples if args.renderer == "blender" else None,
+    "cycles_device": args.cycles_device if args.renderer == "blender" else None,
+    "render_width": render_w,
+    "render_height": render_h,
     "attempted": attempted,
     "succeeded": succeeded,
     "success_rate": success_rate,
@@ -472,7 +506,7 @@ def parse_args() -> argparse.Namespace:
   p.add_argument("--renderer", choices=("stub", "isaacgym", "blender"), default="stub")
   p.add_argument("--engine", choices=("cycles", "eevee"), default="cycles",
                  help="Blender render engine (only used with --renderer blender)")
-  p.add_argument("--samples", type=int, default=64,
+  p.add_argument("--samples", type=int, default=96,
                  help="Cycles render samples (only used with --renderer blender)")
   p.add_argument("--cycles-device", choices=("auto", "gpu", "cpu"), default="auto",
                  help="Cycles compute device for Blender: auto, gpu, or cpu")
@@ -480,6 +514,16 @@ def parse_args() -> argparse.Namespace:
                  help="Path to Blender executable (only used with --renderer blender)")
   p.add_argument("--blend-file", type=Path, default=None,
                  help="Optional master .blend template for static Blender scene visuals")
+  p.add_argument("--lighting-preset", default=None,
+                 choices=(
+                   "clean_key_fill", "reference_area", "softbox_grid",
+                   "softbox_overhead", "softbox_wrap", "softbox_rim",
+                   "spot_accent",
+                 ),
+                 help=(
+                   "Optional scripted lighting preset override for Blender. "
+                   "If omitted, the master .blend template lighting is used."
+                 ))
   p.add_argument("--split", choices=("train", "ood"), default="train")
   p.add_argument("--episodes-per-object", type=int, default=32)
   p.add_argument("--num-envs", type=int, default=8)
@@ -508,16 +552,35 @@ def parse_args() -> argparse.Namespace:
   return p.parse_args()
 
 
+def _apply_photoreal_defaults(args) -> None:
+  """Make Blender eval use the committed photoreal template unless overridden."""
+  if args.renderer != "blender":
+    return
+  if args.blend_file is None:
+    if not DEFAULT_BLEND_FILE.exists():
+      raise FileNotFoundError(
+        f"Default photoreal blend template not found: {DEFAULT_BLEND_FILE}"
+      )
+    args.blend_file = DEFAULT_BLEND_FILE
+  if args.lighting_preset is not None:
+    os.environ[LIGHTING_PRESET_ENV] = args.lighting_preset
+
+
+def _apply_driver_defaults(args) -> None:
+  """Match eval_diffusion_policy.py preview-directory behavior."""
+  if args.video_dir is None and (
+    args.max_success_previews > 0 or args.max_failure_previews > 0
+  ):
+    args.video_dir = args.output_json.parent / f"{args.output_json.stem}_videos"
+
+
 def main():
   args = parse_args()
+  _apply_photoreal_defaults(args)
   if args.worker:
     run_worker(args)
   else:
-    # Only auto-derive video_dir when previews are actually requested.
-    if args.video_dir is None and (
-      args.max_success_previews > 0 or args.max_failure_previews > 0
-    ):
-      args.video_dir = args.output_json.parent / "videos"
+    _apply_driver_defaults(args)
     run_driver(args)
 
 
