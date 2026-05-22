@@ -106,7 +106,8 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 Blender 4.x must be available as a binary. It does not need to be running before
 the job starts. The sbatch script can use an existing binary via `BLENDER=/path/to/blender`
-or download Blender 4.2.9 into scratch if network access is available.
+or download Blender 4.2.9 into per-job scratch if network access is available.
+`MODE=aggregate` does not launch or require Blender.
 
 ## Recommended Cluster Flow
 

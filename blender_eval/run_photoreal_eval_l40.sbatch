@@ -56,7 +56,8 @@ MAX_FAILURE_PREVIEWS="${MAX_FAILURE_PREVIEWS:-2}"
 
 # Point BLENDER at an existing Blender 4.x binary to skip download.
 BLENDER_VERSION="${BLENDER_VERSION:-4.2.9}"
-BLENDER_DIR="${BLENDER_DIR:-${SCRATCH:-/tmp}/blender-${BLENDER_VERSION}-linux-x64}"
+BLENDER_BASE_DIR="${BLENDER_BASE_DIR:-${SLURMTMPDIR:-${SLURM_TMPDIR:-${TMPDIR:-/tmp}}}}"
+BLENDER_DIR="${BLENDER_DIR:-$BLENDER_BASE_DIR/blender-${BLENDER_VERSION}-linux-x64}"
 BLENDER="${BLENDER:-$BLENDER_DIR/blender}"
 DOWNLOAD_BLENDER="${DOWNLOAD_BLENDER:-1}"
 BLENDER_URL="${BLENDER_URL:-https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz}"
@@ -102,7 +103,7 @@ export PATH="$(dirname "$PY"):$PATH"
 export PYTHONPATH="$DIFFUSION_POLICY_ROOT:$SIMTOOLDIFF_ROOT:$SIMTOOLDIFF_ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-${SLURM_CPUS_PER_TASK:-16}}"
 
-if [[ ! -x "$BLENDER" ]]; then
+if [[ "$MODE" != "aggregate" && ! -x "$BLENDER" ]]; then
   if [[ "$DOWNLOAD_BLENDER" != "1" ]]; then
     echo "Blender binary not found or not executable: $BLENDER" >&2
     echo "Set BLENDER=/path/to/blender or DOWNLOAD_BLENDER=1." >&2
@@ -122,15 +123,19 @@ if [[ ! -x "$BLENDER" ]]; then
   tar -xf "$TMP_TARBALL" -C "$(dirname "$BLENDER_DIR")"
 fi
 
-if [[ ! -x "$BLENDER" ]]; then
+if [[ "$MODE" != "aggregate" && ! -x "$BLENDER" ]]; then
   echo "Blender binary still not executable after setup: $BLENDER" >&2
   exit 4
 fi
 
 echo "Python: $PY"
 "$PY" --version
-echo "Blender: $BLENDER"
-"$BLENDER" --version | head -5
+if [[ "$MODE" != "aggregate" ]]; then
+  echo "Blender: $BLENDER"
+  "$BLENDER" --version | head -5
+else
+  echo "Blender: skipped for aggregate mode"
+fi
 echo "Checkpoint: $CKPT"
 echo "Output root: $OUT_ROOT"
 echo "Mode: $MODE"
@@ -178,7 +183,7 @@ case "$MODE" in
       echo "MODE=array_worker requires sbatch --array. SLURM_ARRAY_TASK_ID is unset." >&2
       exit 6
     fi
-    read -r OBJECT_ID CATEGORY_ID OBJ_CATEGORY OBJ_NAME TASK_NAME < <(
+    SPEC_LINE="$(
       "$PY" - "$SPLIT" "$SLURM_ARRAY_TASK_ID" <<'PY'
 import sys
 from pathlib import Path
@@ -195,7 +200,8 @@ if idx < 0 or idx >= len(specs):
 spec = specs[idx]
 print(spec.object_id, spec.category_id, spec.object_category, spec.object_name, spec.task_name)
 PY
-    )
+    )"
+    read -r OBJECT_ID CATEGORY_ID OBJ_CATEGORY OBJ_NAME TASK_NAME <<< "$SPEC_LINE"
     RUN_DIR="$OUT_ROOT/array_${SPLIT}_${ARRAY_RUN_ID}"
     RESULT_DIR="$RUN_DIR/object_results"
     VIDEO_ROOT="$RUN_DIR/photoreal_${SPLIT}_videos"

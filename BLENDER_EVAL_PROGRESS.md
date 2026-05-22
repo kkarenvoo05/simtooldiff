@@ -326,7 +326,8 @@ The SLURM script launches Blender itself with
 `blender --background --python blender_eval/blender_render_script.py`; Blender
 does not need to be open or actively running before the job starts. The L40 path
 should use `--cycles-device gpu`; the local 8 GB RTX 4070 path OOMed on GPU
-Cycles and had to fall back to CPU Cycles.
+Cycles and had to fall back to CPU Cycles. `MODE=aggregate` only combines JSON
+files and does not require Blender.
 
 For broad photoreal eval, use `MODE=array_worker` with a SLURM array and then
 `MODE=aggregate` to produce the same split-level JSON shape as the normal eval
