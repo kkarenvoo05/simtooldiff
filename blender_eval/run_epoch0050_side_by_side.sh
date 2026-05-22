@@ -21,6 +21,7 @@ EPISODES="${EPISODES:-1}"
 HORIZON="${HORIZON:-250}"
 SEED="${SEED:-0}"
 SAMPLES="${SAMPLES:-96}"
+CYCLES_DEVICE="${CYCLES_DEVICE:-auto}"
 GIF_FPS="${GIF_FPS:-10}"
 RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 
@@ -94,6 +95,7 @@ echo "[side-by-side] running Blender Cycles renderer preview..."
   --renderer blender \
   --engine cycles \
   --samples "$SAMPLES" \
+  --cycles-device "$CYCLES_DEVICE" \
   --blender "$BLENDER" \
   --result-json "$RUN_ROOT/blender_cycles_${OBJ_NAME}.json" \
   --video-dir "$BLENDER_DIR"
