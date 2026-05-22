@@ -76,17 +76,22 @@ From the repository root:
 ## Closed-Loop Usage
 
 ```bash
+PATH=$PWD/.venv/bin:$PATH \
+LD_LIBRARY_PATH=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"):$LD_LIBRARY_PATH \
+PYTHONPATH=/home/takaraet/Projects/cs224r/diffusion-policy:$PWD:$PWD/scripts \
 .venv/bin/python blender_eval/eval_blender.py \
   --worker \
   --checkpoint /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt \
   --renderer blender \
   --engine cycles \
-  --samples 64 \
+  --samples 96 \
   --cycles-device auto \
-  --blend-file assets/blender/templates/simtool_lab.blend \
+  --blender /tmp/blender-4.2.9-linux-x64/blender \
   --object-category hammer \
   --object-name claw_hammer \
   --task-name swing_down \
+  --object-id 0 \
+  --category-id 0 \
   --num-envs 1 \
   --episodes-per-object 1 \
   --horizon 250 \
@@ -94,8 +99,9 @@ From the repository root:
   --result-json /tmp/template_test_result.json
 ```
 
-For a full driver run over a split, pass the same `--blend-file` without
-`--worker`; the driver passes it through to every object worker.
+For a full driver run over a split, omit `--worker`. `--renderer blender`
+automatically uses `assets/blender/templates/simtool_lab.blend`; pass
+`--blend-file` only when intentionally testing a different template.
 
 On an 8 GB GPU, use `--cycles-device cpu` if Blender exits or OOMs while the
 policy and IsaacGym are also on CUDA. That keeps the closed loop correct and

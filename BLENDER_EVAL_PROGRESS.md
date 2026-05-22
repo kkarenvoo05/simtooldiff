@@ -18,8 +18,8 @@ blender_eval/
   renderer_interface.py    — Renderer protocol, StubRenderer, IsaacGymRenderer
   blender_renderer.py      — BlenderRenderer: persistent subprocess with FIFO-based IPC
   eval_blender.py          — main eval script (mirrors eval_diffusion_policy.py)
-  blender_render_script.py — bpy script that runs inside Blender (UNVERIFIED)
-  tests/                   — 77 passing tests (5 GPU tests skip on incompatible hardware)
+  blender_render_script.py — bpy script that runs inside Blender
+  tests/                   — eval/render/camera/state/success regression tests
 ```
 
 ### Key design decisions
@@ -38,26 +38,32 @@ blender_eval/
 - **Image pipeline**: renders at native resolution (512x384 or 512x360), then
   `F.interpolate(bilinear, align_corners=False)` to 192x256. Center crop (168x224) happens
   inside the policy.
-- **Render engine**: Cycles (path-tracer) by default. `--engine eevee` for smoke tests.
+- **Render engine**: Cycles (path-tracer) by default. `--engine eevee` is only for
+  renderer debugging, not policy evaluation.
+- **Photoreal template**: `--renderer blender` defaults to
+  `assets/blender/templates/simtool_lab.blend`, so the driver and worker use the
+  same static scene unless `--blend-file` is explicitly overridden.
 - **Success criterion**: isolated in `success_criteria.py`. Same defaults as
   `stage5_collect_dataset._episode_pickup_success()`.
 
 ## Test status
 
 ```
-77 passed, 5 skipped (GPU tests -- need compatible CUDA hardware)
+86 passed
 ```
 
-Tests cover: quaternion math (25), camera params (14), URDF manifest + collapse logic (16),
-renderer shapes (5), serialization boundary (7), success criteria (10).
+Tests cover: quaternion math, camera params, URDF manifest + collapse logic,
+renderer shapes, serialization boundary, IsaacGym state extraction, success
+criteria, and the Blender eval CLI defaults.
 
 ## What works now
 
 - `--renderer stub`: plumbing test, runs end-to-end (gray images, no mesh extraction)
 - `--renderer isaacgym`: uses IsaacGym's camera, should match `eval_diffusion_policy.py`
   exactly for A/B parity
-- `--renderer blender`: fully wired -- launches Blender subprocess, sends poses via FIFO,
-  receives rendered image paths. **The renderer half is now VERIFIED** (see below).
+- `--renderer blender`: fully wired -- launches Blender subprocess, loads the
+  default photoreal `.blend`, renders policy inputs with Blender Cycles, and saves
+  photoreal GIF previews from those same rendered frames.
 
 ## Verified (open-loop, no IsaacGym needed)
 
@@ -170,10 +176,10 @@ which is expected for the untrained checkpoint and is not a completion signal.
    accept `--blender`, allowing the verified portable Blender 4.2.9 binary under `/tmp` to be
    used directly.
 
-## Procedural Blender scene status
+## Photoreal Blender scene status
 
-The default Blender scene no longer requires hand-authoring a `.blend` file for
-IsaacGym-equivalent static context. `blender_render_script.py` procedurally builds:
+The default Blender evaluation path now uses a committed master template at
+`assets/blender/templates/simtool_lab.blend`. The template owns the static scene:
 
 - the `table_narrow_nail.urdf` table as a 0.475 x 0.4 x 0.3 m light-oak box
   centered at the IsaacGym table pose `(0, 0, 0.38)`;
@@ -181,16 +187,17 @@ IsaacGym-equivalent static context. `blender_render_script.py` procedurally buil
   light marble material;
 - a neutral lab scene instead of a required checkerboard: matte concrete floor,
   concrete back wall with beams, a rear workbench, and a visible overhead strip light;
-- deterministic Cycles lighting with a soft overhead rectangular area light, broad
-  key/fill/rim area lights, one low-power tool spotlight, constant seed, adaptive
-  sampling, no motion blur, no depth of field, and conservative AgX exposure;
+- deterministic Cycles lighting using the softbox-grid setup, constant seed,
+  adaptive sampling, no motion blur, no depth of field, and conservative AgX
+  exposure;
 - URDF material colors for the robot meshes (KUKA orange/gray, Sharpa hand colors),
   with PBR-ish roughness/specular/coat settings and clear-coated orange paint;
 - procedural light-oak, concrete, marble, dark fixture, and laminate materials with
   subtle roughness/normal variation and beveled hard edges.
 
-A `.blend` template is now optional, not required for the bridge. Use one later only
-for custom HDRI assets or paper-specific art direction.
+`blender_render_script.py` still contains a scripted fallback scene, but policy
+evaluation should use the template unless you intentionally pass a different
+`--blend-file`.
 
 Verified commands:
 
@@ -210,6 +217,36 @@ The 512x384 smoke frame had 9,618 unique colors, mean pixel value 157.1, and vis
 lab wall/workbench, softened shadows, non-checker floor, light-oak table, and URDF
 robot colors.
 
+## Verified (trained checkpoint tiny photoreal smoke)
+
+The locally copied epoch-50 checkpoint has been loaded through the real policy
+workspace and rolled out for a tiny single-object smoke test with IsaacGym physics
+and Blender Cycles frames feeding the policy:
+
+```bash
+PATH=$PWD/.venv/bin:$PATH \
+LD_LIBRARY_PATH=$(.venv/bin/python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"):$LD_LIBRARY_PATH \
+PYTHONPATH=/home/takaraet/Projects/cs224r/diffusion-policy:$PWD:$PWD/scripts \
+.venv/bin/python blender_eval/eval_blender.py --worker \
+  --checkpoint /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt \
+  --renderer blender --engine cycles --samples 16 --cycles-device cpu \
+  --blender /tmp/blender-4.2.9-linux-x64/blender \
+  --object-category hammer --object-name claw_hammer --task-name swing_down \
+  --object-id 0 --category-id 0 \
+  --num-envs 1 --episodes-per-object 1 --horizon 8 \
+  --result-json /tmp/photoreal_smoke.json \
+  --video-dir /tmp/photoreal_smoke_videos \
+  --max-success-previews 1 --max-failure-previews 1 --gif-fps 10 \
+  --device cuda:0
+```
+
+Result: exited `0`, wrote `/tmp/photoreal_smoke.json`, and saved
+`/tmp/photoreal_smoke_videos/fail_00_attempt001.gif`. The JSON recorded
+`renderer="blender"`, `engine="cycles"`, the default `simtool_lab.blend`,
+`render_width=512`, and `render_height=384`. The short horizon and 16 CPU
+samples were only a smoke-test setting; use the normal 250 horizon and 96 samples
+for visual evaluation.
+
 ## Epoch 50 checkpoint video comparison
 
 The checkpoint Christine evaluated is the best A/B checkpoint because it already
@@ -226,13 +263,14 @@ Reference result already present locally:
 overall: 244/288 = 84.7%
 ```
 
-This laptop had only ~4.6 GiB free before cleanup, which was not enough for a
-4.1 GB checkpoint plus render videos. Package caches were cleaned, leaving
-~5.7 GiB free. That is enough for the checkpoint plus a short one-object video
-comparison, but not enough for broad video capture across the full 288 episodes.
+The checkpoint is now present locally at:
 
-This session cannot SSH to `scdt.stanford.edu` non-interactively. Copy the
-checkpoint into the prepared local directory with:
+```text
+/home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt
+```
+
+If this file is missing after cleanup or on another machine, copy it into the
+prepared local directory with:
 
 ```bash
 scp scdt.stanford.edu:'/move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt' \
@@ -246,7 +284,7 @@ rsync -avP scdt.stanford.edu:'/move/u/chrzhang/diffusion_policy/data/outputs/202
   /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt
 ```
 
-Then generate IsaacGym-vs-Blender videos for the default `claw_hammer` train
+Generate IsaacGym-vs-Blender videos for the default `claw_hammer` train
 object:
 
 ```bash
@@ -277,19 +315,15 @@ OBJECT_ID=10 CATEGORY_ID=5 REF_ROOT=/home/takaraet/Projects/cs224r/diffusion_eva
 
 ## What's NOT done yet
 
-1. **A/B parity test** (`--renderer isaacgym` vs `eval_diffusion_policy.py`) -- needs a
-   GPU-compatible machine (not Blackwell + Python 3.8). Still the critical gate before any
-   closed-loop number is trusted.
-2. **Optional custom assets/HDRI pass** -- the default procedural scene now matches the
-   IsaacGym table geometry and uses a lab-style concrete wall/workbench, visible strip
-   light, Cycles area lighting, and PBR-ish materials. A `.blend` template is only
-   needed if we want manual artistic polish or external HDRI/PBR texture assets for
-   paper visuals.
-3. **Closed-loop render sanity check against a REAL rollout** -- replay ~10 frames of an
-   already-collected rollout in Blender, eyeball the GIF. The open-loop smoke test validates the
-   pipeline and axis conventions at zero pose, but a real articulated rollout (bent arm, grasping
-   hand) must still be eyeballed before trusting closed-loop results.
-4. **Photorealistic sim-to-sim comparison** -- clean vs NSCA policies under Blender rendering.
+1. **Full split A/B parity test** (`--renderer isaacgym` vs
+   `eval_diffusion_policy.py`) -- still the critical gate before any closed-loop
+   success number is trusted. Run with the same checkpoint, seed, env count,
+   horizon, and split.
+2. **Full 250-step photoreal episode review** -- the trained-checkpoint smoke test
+   proves the execution path, but a normal-horizon GIF should still be inspected
+   before broad eval.
+3. **Photorealistic sim-to-sim comparison** -- compare clean vs NSCA policies
+   under Blender rendering once the checkpoint set is available locally.
 
 ---
 
@@ -344,7 +378,7 @@ uv pip install pytest
 python -m pytest blender_eval/tests/ -v
 ```
 
-Expected: **77 passed, 5 skipped** if CUDA isn't working yet, or **82 passed** if it is.
+Expected on this laptop with `.venv/bin` on `PATH`: **86 passed**.
 
 ### 7. Run the GPU-specific tests
 
