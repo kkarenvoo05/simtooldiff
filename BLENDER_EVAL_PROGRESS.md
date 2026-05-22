@@ -313,6 +313,21 @@ OBJECT_ID=10 CATEGORY_ID=5 REF_ROOT=/home/takaraet/Projects/cs224r/diffusion_eva
   /home/takaraet/Projects/cs224r/checkpoints/epoch=0050-val_loss=0.0465.ckpt
 ```
 
+## Cluster photoreal evaluation
+
+Use these files to move the photoreal evaluation onto an L40 cluster node:
+
+```text
+blender_eval/CLUSTER_EVAL_CONTEXT.md
+blender_eval/run_photoreal_eval_l40.sbatch
+```
+
+The SLURM script launches Blender itself with
+`blender --background --python blender_eval/blender_render_script.py`; Blender
+does not need to be open or actively running before the job starts. The L40 path
+should use `--cycles-device gpu`; the local 8 GB RTX 4070 path OOMed on GPU
+Cycles and had to fall back to CPU Cycles.
+
 ## What's NOT done yet
 
 1. **Full split A/B parity test** (`--renderer isaacgym` vs
