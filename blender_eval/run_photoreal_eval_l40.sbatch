@@ -27,9 +27,12 @@ DIFFUSION_POLICY_ROOT="${DIFFUSION_POLICY_ROOT:-/move/u/chrzhang/diffusion_polic
 CKPT="${CKPT:-$DIFFUSION_POLICY_ROOT/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt}"
 OUT_ROOT="${OUT_ROOT:-$SIMTOOLDIFF_ROOT/data/blender_eval/photoreal_l40}"
 
-# MODE=worker runs one object. MODE=driver runs a full split via eval_blender.py.
+# MODE=worker runs one object. MODE=driver runs a full split sequentially.
+# MODE=array_worker runs one object selected by SLURM_ARRAY_TASK_ID.
+# MODE=aggregate combines completed array_worker JSONs into the driver JSON shape.
 MODE="${MODE:-worker}"
 SPLIT="${SPLIT:-train}"
+ARRAY_RUN_ID="${ARRAY_RUN_ID:-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-manual}}}"
 
 OBJ_CATEGORY="${OBJ_CATEGORY:-hammer}"
 OBJ_NAME="${OBJ_NAME:-claw_hammer}"
@@ -170,6 +173,67 @@ case "$MODE" in
       --video-dir "$RUN_DIR/videos"
     ;;
 
+  array_worker)
+    if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
+      echo "MODE=array_worker requires sbatch --array. SLURM_ARRAY_TASK_ID is unset." >&2
+      exit 6
+    fi
+    read -r OBJECT_ID CATEGORY_ID OBJ_CATEGORY OBJ_NAME TASK_NAME < <(
+      "$PY" - "$SPLIT" "$SLURM_ARRAY_TASK_ID" <<'PY'
+import sys
+from pathlib import Path
+
+repo = Path.cwd()
+sys.path.insert(0, str(repo / "scripts"))
+from stage5_multi_object_driver import _split
+
+split = sys.argv[1]
+idx = int(sys.argv[2])
+specs = _split(split)
+if idx < 0 or idx >= len(specs):
+    raise SystemExit(f"array index {idx} out of range for split={split} ({len(specs)} objects)")
+spec = specs[idx]
+print(spec.object_id, spec.category_id, spec.object_category, spec.object_name, spec.task_name)
+PY
+    )
+    RUN_DIR="$OUT_ROOT/array_${SPLIT}_${ARRAY_RUN_ID}"
+    RESULT_DIR="$RUN_DIR/object_results"
+    VIDEO_ROOT="$RUN_DIR/photoreal_${SPLIT}_videos"
+    mkdir -p "$RESULT_DIR" "$VIDEO_ROOT/$OBJ_NAME"
+    echo "Running array object ${SLURM_ARRAY_TASK_ID}: $OBJ_CATEGORY/$OBJ_NAME task=$TASK_NAME"
+    "$PY" blender_eval/eval_blender.py \
+      --worker \
+      "${COMMON_ARGS[@]}" \
+      --object-category "$OBJ_CATEGORY" \
+      --object-name "$OBJ_NAME" \
+      --task-name "$TASK_NAME" \
+      --object-id "$OBJECT_ID" \
+      --category-id "$CATEGORY_ID" \
+      --result-json "$RESULT_DIR/${OBJ_NAME}.json" \
+      --video-dir "$VIDEO_ROOT/$OBJ_NAME"
+    ;;
+
+  aggregate)
+    RUN_DIR="$OUT_ROOT/array_${SPLIT}_${ARRAY_RUN_ID}"
+    RESULT_DIR="$RUN_DIR/object_results"
+    VIDEO_ROOT="$RUN_DIR/photoreal_${SPLIT}_videos"
+    echo "Aggregating array results from $RESULT_DIR"
+    "$PY" blender_eval/aggregate_eval_results.py \
+      --split "$SPLIT" \
+      --checkpoint "$CKPT" \
+      --result-dir "$RESULT_DIR" \
+      --output-json "$RUN_DIR/photoreal_${SPLIT}.json" \
+      --renderer blender \
+      --engine "$ENGINE" \
+      --samples "$SAMPLES" \
+      --cycles-device "$CYCLES_DEVICE" \
+      --episodes-per-object "$EPISODES_PER_OBJECT" \
+      --num-envs "$NUM_ENVS" \
+      --xy-range "$XY_RANGE" \
+      --horizon "$HORIZON" \
+      --video-dir "$VIDEO_ROOT"
+    ;;
+
   driver)
     RUN_DIR="$OUT_ROOT/driver_${SPLIT}_${JOB_ID}"
     mkdir -p "$RUN_DIR"
@@ -181,7 +245,7 @@ case "$MODE" in
     ;;
 
   *)
-    echo "Unknown MODE=$MODE. Expected MODE=worker or MODE=driver." >&2
+    echo "Unknown MODE=$MODE. Expected worker, array_worker, aggregate, or driver." >&2
     exit 5
     ;;
 esac

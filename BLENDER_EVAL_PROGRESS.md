@@ -49,7 +49,7 @@ blender_eval/
 ## Test status
 
 ```
-86 passed
+88 passed
 ```
 
 Tests cover: quaternion math, camera params, URDF manifest + collapse logic,
@@ -328,6 +328,10 @@ does not need to be open or actively running before the job starts. The L40 path
 should use `--cycles-device gpu`; the local 8 GB RTX 4070 path OOMed on GPU
 Cycles and had to fall back to CPU Cycles.
 
+For broad photoreal eval, use `MODE=array_worker` with a SLURM array and then
+`MODE=aggregate` to produce the same split-level JSON shape as the normal eval
+driver. Train split uses `--array=0-8`; OOD split uses `--array=0-2`.
+
 ## What's NOT done yet
 
 1. **Full split A/B parity test** (`--renderer isaacgym` vs
@@ -393,7 +397,7 @@ uv pip install pytest
 python -m pytest blender_eval/tests/ -v
 ```
 
-Expected on this laptop with `.venv/bin` on `PATH`: **86 passed**.
+Expected on this laptop with `.venv/bin` on `PATH`: **88 passed**.
 
 ### 7. Run the GPU-specific tests
 

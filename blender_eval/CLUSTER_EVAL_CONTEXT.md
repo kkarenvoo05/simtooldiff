@@ -128,7 +128,42 @@ $OUT_ROOT/worker_claw_hammer_<jobid>/
   videos/fail_00_attempt001.gif or videos/success_00_attempt001.gif
 ```
 
-Then run the split-level evaluation:
+For a full split, prefer an object-level SLURM array. This runs one object per
+L40 job and later aggregates the object JSONs into the same summary shape as
+`eval_blender.py`'s driver:
+
+```bash
+MODE=array_worker \
+SPLIT=train \
+EPISODES_PER_OBJECT=32 \
+SAMPLES=96 \
+CYCLES_DEVICE=gpu \
+sbatch --array=0-8 blender_eval/run_photoreal_eval_l40.sbatch
+```
+
+After the array finishes, aggregate it. Use the array job id as `ARRAY_RUN_ID`:
+
+```bash
+MODE=aggregate \
+SPLIT=train \
+ARRAY_RUN_ID=<array_job_id> \
+EPISODES_PER_OBJECT=32 \
+SAMPLES=96 \
+CYCLES_DEVICE=gpu \
+sbatch blender_eval/run_photoreal_eval_l40.sbatch
+```
+
+Expected array output:
+
+```text
+$OUT_ROOT/array_train_<array_job_id>/
+  object_results/<object_name>.json
+  photoreal_train.json
+  photoreal_train_videos/<object_name>/*.gif
+```
+
+The sequential driver mode is available, but it is likely too slow for broad
+photoreal evaluation:
 
 ```bash
 MODE=driver \
@@ -150,12 +185,12 @@ $OUT_ROOT/driver_train_<jobid>/
 For OOD:
 
 ```bash
-MODE=driver \
+MODE=array_worker \
 SPLIT=ood \
 EPISODES_PER_OBJECT=32 \
 SAMPLES=96 \
 CYCLES_DEVICE=gpu \
-sbatch blender_eval/run_photoreal_eval_l40.sbatch
+sbatch --array=0-2 blender_eval/run_photoreal_eval_l40.sbatch
 ```
 
 ## What To Check
