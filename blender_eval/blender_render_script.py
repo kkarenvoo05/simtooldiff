@@ -46,7 +46,7 @@ CYCLES_SEED = 0
 CYCLES_ADAPTIVE_THRESHOLD = 0.005
 CYCLES_MIN_SAMPLES = 48
 LIGHTING_PRESET_ENV = "SIMTOOLDIFF_LIGHTING_PRESET"
-DEFAULT_LIGHTING_PRESET = "reference_area"
+DEFAULT_LIGHTING_PRESET = "softbox_grid"
 _DIAGNOSTICS_PRINTED = False
 
 # ---- Blender imports (only available inside blender --python) ----
@@ -189,6 +189,29 @@ def _add_shader_bevel(mat, bsdf, radius):
   bevel = mat.node_tree.nodes.new(type="ShaderNodeBevel")
   bevel.inputs["Radius"].default_value = radius
   mat.node_tree.links.new(bevel.outputs["Normal"], bsdf.inputs["Normal"])
+
+
+def _add_noise_bump(mat, bsdf, *, scale=80.0, detail=10.0, strength=0.01, distance=0.004):
+  if "Normal" not in bsdf.inputs:
+    return
+  nodes = mat.node_tree.nodes
+  links = mat.node_tree.links
+  normal_input = bsdf.inputs["Normal"]
+  previous_normal = normal_input.links[0].from_socket if normal_input.links else None
+  for link in list(normal_input.links):
+    links.remove(link)
+
+  noise = nodes.new(type="ShaderNodeTexNoise")
+  noise.inputs["Scale"].default_value = scale
+  noise.inputs["Detail"].default_value = detail
+  noise.inputs["Roughness"].default_value = 0.58
+  bump = nodes.new(type="ShaderNodeBump")
+  bump.inputs["Strength"].default_value = strength
+  bump.inputs["Distance"].default_value = distance
+  if previous_normal is not None and "Normal" in bump.inputs:
+    links.new(previous_normal, bump.inputs["Normal"])
+  links.new(noise.outputs["Fac"], bump.inputs["Height"])
+  links.new(bump.outputs["Normal"], normal_input)
 
 
 def _add_base_color_variation(mat, bsdf, color_low, color_high, scale=24.0, detail=8.0):
@@ -617,22 +640,30 @@ def _robot_material(link_name, rgba):
   if link_name.startswith("iiwa14_link_") and rgba[0] > 0.9 and rgba[1] > 0.25:
     mat = _make_material(
       f"urdf_{link_name}_material",
-      (0.75, 0.29, 0.035, rgba[3]),
-      roughness=0.40,
-      specular=0.50,
-      coat=0.22,
-      roughness_variation=0.08,
-      bevel_radius=0.0012,
+      (0.72, 0.27, 0.030, rgba[3]),
+      roughness=0.46,
+      specular=0.46,
+      coat=0.18,
+      roughness_variation=0.14,
+      bevel_radius=0.0016,
     )
     bsdf = mat.node_tree.nodes.get("Principled BSDF")
     if bsdf:
       _add_base_color_variation(
         mat,
         bsdf,
-        (0.63, 0.23, 0.025, rgba[3]),
-        (0.86, 0.35, 0.045, rgba[3]),
-        scale=18.0,
-        detail=6.0,
+        (0.54, 0.18, 0.018, rgba[3]),
+        (0.88, 0.35, 0.050, rgba[3]),
+        scale=13.0,
+        detail=8.0,
+      )
+      _add_noise_bump(
+        mat,
+        bsdf,
+        scale=95.0,
+        detail=12.0,
+        strength=0.007,
+        distance=0.0035,
       )
     return mat
   if link_name.startswith("iiwa14_link_") and max(rgba[:3]) < 0.45:
@@ -895,33 +926,135 @@ def _setup_softbox_grid_lighting():
   """Softer product-lighting variant: broad key plus strip and rim."""
   _add_area_light(
     "LargeLeftSoftbox",
-    location=(-1.08, -1.18, 1.34),
+    location=(-0.84, -1.22, 1.38),
     target=(0.0, 0.02, 0.62),
-    energy=66.0,
-    size=1.45,
-    size_y=0.90,
+    energy=58.0,
+    size=1.36,
+    size_y=0.86,
   )
   _add_area_light(
     "TopStrip",
-    location=(0.05, -0.25, 1.52),
+    location=(0.08, -0.34, 1.54),
     target=(0.0, 0.02, 0.62),
-    energy=42.0,
-    size=1.55,
-    size_y=0.20,
+    energy=50.0,
+    size=1.48,
+    size_y=0.18,
   )
   _add_area_light(
     "RightFill",
     location=(1.25, -0.80, 0.95),
     target=(0.0, 0.02, 0.54),
-    energy=6.0,
+    energy=4.5,
     size=2.60,
   )
   _add_area_light(
     "BackEdge",
-    location=(-0.25, 0.95, 1.24),
+    location=(0.20, 0.92, 1.22),
     target=(0.02, 0.04, 0.66),
-    energy=16.0,
-    size=0.82,
+    energy=12.0,
+    size=0.74,
+  )
+
+
+def _setup_softbox_overhead_lighting():
+  """Softbox variant with the strip light doing more of the shadow work."""
+  _add_area_light(
+    "LargeLeftSoftbox",
+    location=(-0.72, -1.30, 1.28),
+    target=(0.0, 0.02, 0.60),
+    energy=42.0,
+    size=1.42,
+    size_y=0.92,
+  )
+  _add_area_light(
+    "TopStrip",
+    location=(0.12, -0.40, 1.58),
+    target=(0.0, 0.03, 0.62),
+    energy=70.0,
+    size=1.36,
+    size_y=0.16,
+  )
+  _add_area_light(
+    "RightFill",
+    location=(1.20, -0.84, 0.95),
+    target=(0.0, 0.02, 0.54),
+    energy=3.5,
+    size=2.70,
+  )
+  _add_area_light(
+    "BackEdge",
+    location=(0.18, 0.90, 1.24),
+    target=(0.02, 0.04, 0.66),
+    energy=12.0,
+    size=0.74,
+  )
+
+
+def _setup_softbox_wrap_lighting():
+  """Softbox variant with broader camera-side wrap and lower contrast."""
+  _add_area_light(
+    "LargeLeftSoftbox",
+    location=(-1.18, -1.06, 1.22),
+    target=(0.0, 0.02, 0.60),
+    energy=76.0,
+    size=1.80,
+    size_y=1.05,
+  )
+  _add_area_light(
+    "TopStrip",
+    location=(0.02, -0.30, 1.50),
+    target=(0.0, 0.02, 0.62),
+    energy=34.0,
+    size=1.55,
+    size_y=0.20,
+  )
+  _add_area_light(
+    "RightFill",
+    location=(1.30, -0.86, 0.98),
+    target=(0.0, 0.02, 0.54),
+    energy=7.0,
+    size=2.80,
+  )
+  _add_area_light(
+    "BackEdge",
+    location=(-0.12, 0.98, 1.20),
+    target=(0.02, 0.04, 0.66),
+    energy=10.0,
+    size=0.92,
+  )
+
+
+def _setup_softbox_rim_lighting():
+  """Softbox variant with more separation on the hammer and orange arm."""
+  _add_area_light(
+    "LargeLeftSoftbox",
+    location=(-0.84, -1.22, 1.38),
+    target=(0.0, 0.02, 0.62),
+    energy=54.0,
+    size=1.36,
+    size_y=0.86,
+  )
+  _add_area_light(
+    "TopStrip",
+    location=(0.08, -0.34, 1.54),
+    target=(0.0, 0.02, 0.62),
+    energy=46.0,
+    size=1.48,
+    size_y=0.18,
+  )
+  _add_area_light(
+    "RightFill",
+    location=(1.25, -0.80, 0.95),
+    target=(0.0, 0.02, 0.54),
+    energy=3.8,
+    size=2.60,
+  )
+  _add_area_light(
+    "BackEdge",
+    location=(0.34, 0.84, 1.28),
+    target=(0.02, 0.04, 0.66),
+    energy=24.0,
+    size=0.64,
   )
 
 
@@ -981,13 +1114,23 @@ def _setup_lighting_preset(preset):
   elif preset == "softbox_grid":
     _setup_world_hdri(_resolve_hdri_path(), strength=0.02, visible_to_camera=False)
     _setup_softbox_grid_lighting()
+  elif preset == "softbox_overhead":
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.02, visible_to_camera=False)
+    _setup_softbox_overhead_lighting()
+  elif preset == "softbox_wrap":
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.02, visible_to_camera=False)
+    _setup_softbox_wrap_lighting()
+  elif preset == "softbox_rim":
+    _setup_world_hdri(_resolve_hdri_path(), strength=0.02, visible_to_camera=False)
+    _setup_softbox_rim_lighting()
   elif preset == "spot_accent":
     _setup_world_hdri(_resolve_hdri_path(), strength=0.015, visible_to_camera=False)
     _setup_spot_accent_lighting()
   else:
     raise RuntimeError(
       f"Unknown lighting preset {preset!r}. Expected one of: "
-      "clean_key_fill, reference_area, softbox_grid, spot_accent."
+      "clean_key_fill, reference_area, softbox_grid, softbox_overhead, "
+      "softbox_wrap, softbox_rim, spot_accent."
     )
   bpy.context.scene["simtooldiff_lighting_preset"] = preset
   return preset
