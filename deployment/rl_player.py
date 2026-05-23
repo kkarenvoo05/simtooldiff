@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -48,6 +48,10 @@ class RlPlayer:
     ) -> players.PpoPlayerContinuous:
         from rl_games.common import env_configurations
 
+        print(
+            f"[RlPlayer] create_rl_player device={self.device} checkpoint_path={checkpoint_path}",
+            flush=True,
+        )
         env_configurations.register(
             "rlgpu", {"env_creator": lambda **kwargs: self, "vecenv_type": "RLGPU"}
         )
@@ -65,14 +69,19 @@ class RlPlayer:
         if checkpoint_path is not None:
             config["load_path"] = checkpoint_path
         runner = Runner()
+        print("[RlPlayer] loading runner config", flush=True)
         runner.load(config)
+        print("[RlPlayer] runner config loaded; creating player", flush=True)
 
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         player = runner.create_player()
+        print("[RlPlayer] player created; initializing RNN", flush=True)
         player.init_rnn()
         player.has_batch_dimension = True
         if checkpoint_path is not None:
+            print(f"[RlPlayer] restoring player from {checkpoint_path}", flush=True)
             player.restore(checkpoint_path)
+            print("[RlPlayer] player restore complete", flush=True)
         return player
 
     def _run_sanity_checks(self) -> None:
@@ -120,6 +129,25 @@ class RlPlayer:
 
     def reset(self) -> None:
         self.player.reset()
+
+    def _clone_internal_state(self, value: Any) -> Any:
+        if isinstance(value, torch.Tensor):
+            return value.clone()
+        if isinstance(value, tuple):
+            return tuple(self._clone_internal_state(item) for item in value)
+        if isinstance(value, list):
+            return [self._clone_internal_state(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                key: self._clone_internal_state(item) for key, item in value.items()
+            }
+        return value
+
+    def get_internal_state(self) -> Any:
+        return self._clone_internal_state(getattr(self.player, "states", None))
+
+    def set_internal_state(self, state: Any) -> None:
+        self.player.states = self._clone_internal_state(state)
 
 
 def main() -> None:

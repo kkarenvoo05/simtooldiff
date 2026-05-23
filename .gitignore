@@ -264,5 +264,7 @@ venv/
 .DS_Store
 .vscode/
 .idea/
-# Local Isaac Gym copy (not part of repo)
+# Local Isaac Gym copy / package archive (not part of repo)
 isaacgym_pkg/
+.idea/IsaacGym_Preview_4_Package.tar.gz
+IsaacGym_Preview_4_Package.tar.gz

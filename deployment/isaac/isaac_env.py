@@ -1,19 +1,29 @@
 # NOTE: torch must be imported AFTER isaacgym imports
 # isort: off
+print("[isaac_env import] before SimToolReal import", flush=True)
 from isaacgymenvs.tasks.simtoolreal.env import SimToolReal
+print("[isaac_env import] after SimToolReal import", flush=True)
+print("[isaac_env import] before torch import", flush=True)
 import torch
+print("[isaac_env import] after torch import", flush=True)
 # isort: on
 
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+print("[isaac_env import] before hydra import", flush=True)
 from hydra import compose, initialize
+print("[isaac_env import] after hydra import", flush=True)
 from omegaconf import DictConfig, OmegaConf
 
+print("[isaac_env import] before rl_player_utils import", flush=True)
 from deployment.rl_player_utils import (
     read_cfg_omegaconf,
 )
+print("[isaac_env import] after rl_player_utils import", flush=True)
+print("[isaac_env import] before isaacgym_task_map import", flush=True)
 from isaacgymenvs.tasks import isaacgym_task_map
+print("[isaac_env import] after isaacgym_task_map import", flush=True)
 from isaacgymenvs.utils.reformat import omegaconf_to_dict, print_dict
 
 
@@ -26,10 +36,13 @@ def create_env(
     episode_length: Optional[int] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> SimToolReal:
+    print("[create_env] reading config", flush=True)
     cfg = read_cfg_omegaconf(config_path=config_path, device=device)
 
     if merge_with_default_config:
+        print("[create_env] merging with default config", flush=True)
         cfg = merge_cfg_with_default_config(cfg)
+    print("[create_env] creating env from cfg", flush=True)
     return create_env_from_cfg(
         cfg=cfg,
         headless=headless,
@@ -80,6 +93,7 @@ def create_env_from_cfg(
     episode_length: Optional[int] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> SimToolReal:
+    print("[create_env_from_cfg] start", flush=True)
     # Modify the config
     cfg.headless = headless
     cfg.task.sim.enable_viewer_sync_at_start = enable_viewer_sync_at_start
@@ -93,10 +107,10 @@ def create_env_from_cfg(
 
     # Modify the config for the task
     if overrides is not None:
-        print("-" * 80)
-        print("Overriding config")
-        print("-" * 80)
-        print()
+        print("-" * 80, flush=True)
+        print("Overriding config", flush=True)
+        print("-" * 80, flush=True)
+        print(flush=True)
 
         # Example: overrides = {"task.env.asset.robot": "urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf"}
         # Note: We first check if the key exists and error out if it doesn't
@@ -111,16 +125,19 @@ def create_env_from_cfg(
             # This makes sure we are modifying the correct key
             current_value_eval_str = f"cfg.{key}"
             print(
-                f"Current value of {current_value_eval_str}: {eval(current_value_eval_str)}"
+                f"Current value of {current_value_eval_str}: {eval(current_value_eval_str)}",
+                flush=True,
             )
 
             # Update the value of the key
             update_value_eval_str = f"cfg.{key} = {value}"
-            print(f"Evaluating: {update_value_eval_str}")
+            print(f"Evaluating: {update_value_eval_str}", flush=True)
             exec(update_value_eval_str)
-            print()
+            print(flush=True)
 
+    print("[create_env_from_cfg] config prepared; dumping config", flush=True)
     print_dict(omegaconf_to_dict(cfg))
+    print("[create_env_from_cfg] constructing SimToolReal", flush=True)
 
     env = isaacgym_task_map[cfg.task_name](
         cfg=omegaconf_to_dict(cfg.task),
@@ -131,6 +148,7 @@ def create_env_from_cfg(
         virtual_screen_capture=False,
         force_render=True,
     )
+    print("[create_env_from_cfg] SimToolReal constructed", flush=True)
     return env
 
 
