@@ -33,7 +33,7 @@ import os
 import random
 import tempfile
 import time
-from copy import copy
+from copy import copy, deepcopy
 from os.path import join
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -1692,6 +1692,160 @@ class SimToolReal(VecTask):
         print(
             f"Success tolerance value after loading from checkpoint: {self.success_tolerance}"
         )
+
+    def _branch_state_tensor_fields(self) -> List[str]:
+        return [
+            "prev_episode_successes",
+            "prev_episode_true_objective",
+            "successes",
+            "true_objective",
+            "near_goal_steps",
+            "lifted_object",
+            "closest_keypoint_max_dist",
+            "closest_keypoint_max_dist_fixed_size",
+            "closest_fingertip_dist",
+            "furthest_hand_dist",
+            "prev_targets",
+            "cur_targets",
+            "reset_buf",
+            "progress_buf",
+            "reset_goal_buf",
+            "obj_keypoint_pos",
+            "goal_keypoint_pos",
+            "obj_keypoint_pos_fixed_size",
+            "goal_keypoint_pos_fixed_size",
+            "rb_forces",
+            "rb_torques",
+            "random_force_prob",
+            "random_torque_prob",
+            "random_lin_vel_impulse_prob",
+            "random_ang_vel_impulse_prob",
+            "goal_states",
+            "goal_init_state",
+            "object_init_state",
+            "prev_total_episode_closest_keypoint_max_dist",
+            "total_episode_closest_keypoint_max_dist",
+            "prev_episode_closest_keypoint_max_dist",
+            "rew_buf",
+            "actions",
+            "obs_buf",
+            "states_buf",
+            "obs_queue",
+            "action_queue",
+            "object_state_queue",
+        ]
+
+    def _branch_state_scalar_fields(self) -> List[str]:
+        return [
+            "success_tolerance",
+            "last_curriculum_update",
+            "frame_since_restart",
+        ]
+
+    def capture_branch_state(self, env_ids):
+        env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        dof_state_view = self.dof_state.view(self.num_envs, -1, self.dof_state.shape[-1])
+        snapshot = {
+            "env_ids": env_ids.clone(),
+            "dof_state": dof_state_view[env_ids].clone(),
+            "object_root_state": self.root_state_tensor[self.object_indices[env_ids]].clone(),
+            "table_root_state": self.root_state_tensor[self.table_indices[env_ids]].clone(),
+            "goal_root_state": self.root_state_tensor[
+                self.goal_object_indices[env_ids]
+            ].clone(),
+            "tensor_fields": {},
+            "scalar_fields": {},
+            "rewards_episode": {},
+        }
+
+        for field_name in self._branch_state_tensor_fields():
+            value = getattr(self, field_name)
+            if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] == self.num_envs:
+                snapshot["tensor_fields"][field_name] = value[env_ids].clone()
+            elif isinstance(value, torch.Tensor):
+                snapshot["tensor_fields"][field_name] = value.clone()
+            else:
+                snapshot["tensor_fields"][field_name] = deepcopy(value)
+
+        for field_name in self._branch_state_scalar_fields():
+            snapshot["scalar_fields"][field_name] = deepcopy(getattr(self, field_name))
+
+        for key, value in self.rewards_episode.items():
+            if isinstance(value, torch.Tensor) and value.ndim > 0 and value.shape[0] == self.num_envs:
+                snapshot["rewards_episode"][key] = value[env_ids].clone()
+            elif isinstance(value, torch.Tensor):
+                snapshot["rewards_episode"][key] = value.clone()
+            else:
+                snapshot["rewards_episode"][key] = deepcopy(value)
+
+        return snapshot
+
+    def restore_branch_state(self, snapshot, env_ids):
+        if snapshot is None:
+            return
+
+        env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        dof_state_view = self.dof_state.view(self.num_envs, -1, self.dof_state.shape[-1])
+        dof_state_view[env_ids].copy_(snapshot["dof_state"].to(self.device))
+        self.root_state_tensor[self.object_indices[env_ids]].copy_(
+            snapshot["object_root_state"].to(self.device)
+        )
+        self.root_state_tensor[self.table_indices[env_ids]].copy_(
+            snapshot["table_root_state"].to(self.device)
+        )
+        self.root_state_tensor[self.goal_object_indices[env_ids]].copy_(
+            snapshot["goal_root_state"].to(self.device)
+        )
+
+        for field_name, value in snapshot["tensor_fields"].items():
+            target = getattr(self, field_name)
+            if isinstance(target, torch.Tensor) and isinstance(value, torch.Tensor):
+                if target.ndim > 0 and target.shape[0] == self.num_envs:
+                    target[env_ids].copy_(value.to(target.device))
+                else:
+                    target.copy_(value.to(target.device))
+            else:
+                setattr(self, field_name, deepcopy(value))
+
+        for field_name, value in snapshot["scalar_fields"].items():
+            setattr(self, field_name, deepcopy(value))
+
+        for key, value in snapshot["rewards_episode"].items():
+            target = self.rewards_episode.get(key, None)
+            if isinstance(target, torch.Tensor) and isinstance(value, torch.Tensor):
+                if target.ndim > 0 and target.shape[0] == self.num_envs:
+                    target[env_ids].copy_(value.to(target.device))
+                else:
+                    target.copy_(value.to(target.device))
+            else:
+                self.rewards_episode[key] = deepcopy(value)
+
+        self.arm_hand_dof_state = self.dof_state.view(self.num_envs, -1, 2)[
+            :, : self.num_hand_arm_dofs
+        ]
+        self.arm_hand_dof_pos = self.arm_hand_dof_state[..., 0]
+        self.arm_hand_dof_vel = self.arm_hand_dof_state[..., 1]
+
+        self.set_actor_root_state_object_indices = []
+        self.set_dof_state_object_indices = []
+        robot_indices = self.robot_indices[env_ids].to(torch.int32)
+        self.deferred_set_dof_state_tensor_indexed([robot_indices])
+        self.deferred_set_actor_root_state_tensor_indexed(
+            [
+                self.object_indices[env_ids],
+                self.table_indices[env_ids],
+                self.goal_object_indices[env_ids],
+            ]
+        )
+        self.set_dof_state_tensor_indexed()
+        self.set_actor_root_state_tensor_indexed()
+        self.gym.refresh_dof_state_tensor(self.sim)
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        if self.with_fingertip_force_sensors or self.with_table_force_sensor:
+            self.gym.refresh_force_sensor_tensor(self.sim)
+        if self.with_dof_force_sensors:
+            self.gym.refresh_dof_force_tensor(self.sim)
 
     def create_sim(self):
         self.dt = self.sim_params.dt

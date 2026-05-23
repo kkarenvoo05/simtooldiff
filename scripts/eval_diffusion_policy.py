@@ -45,6 +45,7 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
         "--episodes-per-object", str(args.episodes_per_object),
         "--horizon", str(args.horizon),
         "--xy-range", str(args.xy_range),
+        "--start-z-offset", str(args.start_z_offset),
         "--seed", str(args.seed + spec.object_id),
         "--device", args.device,
         "--result-json", str(result_path),
@@ -117,6 +118,7 @@ def run_driver(args) -> None:
         "episodes_per_object": args.episodes_per_object,
         "num_envs": args.num_envs,
         "xy_range": args.xy_range,
+        "start_z_offset": args.start_z_offset,
         "horizon": args.horizon,
         "overall_success_rate": overall,
         "total_attempted": total_attempted,
@@ -195,7 +197,10 @@ def run_worker(args) -> None:
 
     # Build env to mirror stage5_collect_dataset.
     nominal_start_pose = _load_nominal_start_pose(
-        args.object_category, args.object_name, args.task_name
+        args.object_category,
+        args.object_name,
+        args.task_name,
+        start_z_offset=args.start_z_offset,
     )
     nominal_goal_pose = list(nominal_start_pose)
     nominal_goal_pose[2] += LIFT_HEIGHT_M
@@ -206,7 +211,7 @@ def run_worker(args) -> None:
     env = _make_env(
         num_envs=args.num_envs,
         nominal_start_pose=nominal_start_pose,
-        nominal_goal_pose=nominal_goal_pose,
+        goal_poses=[nominal_goal_pose],
         xy_range=args.xy_range,
         horizon=args.horizon,
         headless=True,
@@ -386,6 +391,7 @@ def run_worker(args) -> None:
         "attempted": attempted,
         "succeeded": succeeded,
         "success_rate": success_rate,
+        "start_z_offset": args.start_z_offset,
         "preview_dir": str(args.video_dir) if save_previews else None,
         "previews_saved": preview_counts if save_previews else {"success": 0, "fail": 0},
     }
@@ -408,6 +414,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-envs", type=int, default=8)
     p.add_argument("--horizon", type=int, default=250)
     p.add_argument("--xy-range", type=float, default=0.10)
+    p.add_argument(
+        "--start-z-offset",
+        type=float,
+        default=0.0,
+        help=(
+            "Added to DexToolBench start_pose.z before resets. "
+            "Use 0.0 to spawn on the table; positive values drop above it."
+        ),
+    )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cuda:0")
     p.add_argument(

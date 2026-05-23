@@ -31,6 +31,9 @@ conda activate str
 
 # ------ TRAIN ------
 
+# pick_place and pick_place_release now route through
+# scripts/collect_dataset_pick_place_release.py via the multi-object driver.
+
 # i used seed 0 the first time i ran this, and then 1000 for the second run because i wanted to double the amount of data
 # python scripts/stage5_multi_object_driver.py \
 #     --split train \
@@ -44,6 +47,7 @@ conda activate str
 
 # python scripts/stage5_multi_object_driver.py \
 #     --split ood \
+#     --variant noisy_clean \
 #     --output-zarr data/stage5_ood.zarr \
 #     --per-object-transitions 2000 \
 #     --num-envs 8 \
@@ -61,12 +65,12 @@ conda activate str
 #     --num-envs 8 \
 #     --output-json data/diffusion_eval/epoch0050_train.json
 
-python scripts/eval_diffusion_policy.py \
-    --checkpoint /move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt \
-    --split ood \
-    --episodes-per-object 32 \
-    --num-envs 8 \
-    --output-json data/diffusion_eval/epoch0050_ood.json
+# python scripts/eval_diffusion_policy.py \
+#     --checkpoint /move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt \
+#     --split ood \
+#     --episodes-per-object 32 \
+#     --num-envs 8 \
+#     --output-json data/diffusion_eval/epoch0050_ood.json
 
 echo "Done"
 h=$((SECONDS / 3600))
