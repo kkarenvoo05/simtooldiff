@@ -84,11 +84,15 @@ def test_compute_saved_branch_length_matches_spec():
 
 def test_validate_anchored_resume_attrs_rejects_mismatch():
     config = anchored.AnchoredRecoveryConfig(
+        collection_mode="fixed_segment",
         branches_per_rollout=3,
         branch_min_step=10,
         branch_max_step=25,
+        branch_gap_override=None,
         perturb_steps=3,
         recovery_steps=15,
+        min_saved_steps=16,
+        max_saved_steps=64,
         noise_scale=1.0,
         arm_base_noise=0.1,
         arm_wrist_noise=0.1,

@@ -134,6 +134,22 @@ def _jsonable(value):
 
 
 @dataclass
+class PickupSuccessMetrics:
+    max_height_success: bool
+    stable_success: bool
+    max_object_z: float
+    object_start_z: float
+    goal_z: float
+    max_lift_m: float
+    final_object_z: float
+    final_lift_m: float
+    first_gate_step: Optional[int]
+    gate_steps: int
+    max_consecutive_gate_steps: int
+    hold_steps: int
+
+
+@dataclass
 class RolloutResult:
     success: bool
     viewer_closed: bool
@@ -577,25 +593,80 @@ def _episode_pickup_success(
     pickup_gate_history: Optional[List[bool]] = None,
     hold_steps: int = PICKUP_SUCCESS_HOLD_STEPS,
 ) -> bool:
+    metrics = compute_pickup_success_metrics(
+        object_zs=object_zs,
+        object_start_z=object_start_z,
+        goal_z=goal_z,
+        pickup_gate_history=pickup_gate_history,
+        hold_steps=hold_steps,
+    )
+    if not pickup_gate_history:
+        return metrics.max_height_success
+    return metrics.stable_success
+
+
+def compute_pickup_success_metrics(
+    object_zs: List[float],
+    object_start_z: float,
+    goal_z: float,
+    pickup_gate_history: Optional[List[bool]] = None,
+    hold_steps: int = PICKUP_SUCCESS_HOLD_STEPS,
+) -> PickupSuccessMetrics:
     if not object_zs:
-        return False
-    max_object_z = max(object_zs)
-    max_lift_m = max_object_z - object_start_z
-    z_gate = bool(
+        return PickupSuccessMetrics(
+            max_height_success=False,
+            stable_success=False,
+            max_object_z=float("-inf"),
+            object_start_z=float(object_start_z),
+            goal_z=float(goal_z),
+            max_lift_m=float("-inf"),
+            final_object_z=float("nan"),
+            final_lift_m=float("nan"),
+            first_gate_step=None,
+            gate_steps=0,
+            max_consecutive_gate_steps=0,
+            hold_steps=int(hold_steps),
+        )
+
+    max_object_z = float(max(object_zs))
+    final_object_z = float(object_zs[-1])
+    max_lift_m = max_object_z - float(object_start_z)
+    final_lift_m = final_object_z - float(object_start_z)
+    max_height_success = bool(
         max_object_z >= goal_z - PICKUP_SUCCESS_GOAL_Z_TOLERANCE_M
         and max_lift_m >= PICKUP_SUCCESS_MIN_LIFT_M
     )
-    if not pickup_gate_history:
-        return z_gate
-    if hold_steps <= 1:
-        return z_gate and any(pickup_gate_history)
+    if pickup_gate_history is None:
+        pickup_gate_history = [
+            bool(
+                z >= goal_z - PICKUP_SUCCESS_GOAL_Z_TOLERANCE_M
+                and z - object_start_z >= PICKUP_SUCCESS_MIN_LIFT_M
+            )
+            for z in object_zs
+        ]
 
+    first_gate_step = _first_true_step(pickup_gate_history)
+    gate_steps = sum(1 for gate in pickup_gate_history if gate)
+    max_consecutive = 0
     consecutive = 0
     for gate in pickup_gate_history:
         consecutive = consecutive + 1 if gate else 0
-        if consecutive >= hold_steps:
-            return z_gate
-    return False
+        max_consecutive = max(max_consecutive, consecutive)
+    stable_success = bool(max_height_success and max_consecutive >= int(hold_steps))
+    return PickupSuccessMetrics(
+        max_height_success=max_height_success,
+        stable_success=stable_success,
+        max_object_z=max_object_z,
+        object_start_z=float(object_start_z),
+        goal_z=float(goal_z),
+        max_lift_m=float(max_lift_m),
+        final_object_z=final_object_z,
+        final_lift_m=float(final_lift_m),
+        first_gate_step=first_gate_step,
+        gate_steps=int(gate_steps),
+        max_consecutive_gate_steps=int(max_consecutive),
+        hold_steps=int(hold_steps),
+    )
 
 
 def _first_true_step(values: List[bool]) -> Optional[int]:
@@ -724,6 +795,94 @@ def _update_pickup_timing_attrs(root, batch_metrics: dict) -> None:
     )
     root.attrs["pickup_hold_first_step_mean"] = (
         total_hold_sum / total_hold_count if total_hold_count > 0 else -1.0
+    )
+
+
+def _update_anchored_branch_metric_attrs(root, batch_metrics: dict) -> None:
+    total_count = int(root.attrs.get("anchored_branch_metric_count", 0)) + int(
+        batch_metrics["count"]
+    )
+    total_stable = int(root.attrs.get("anchored_branch_stable_success_count", 0)) + int(
+        batch_metrics["stable_success_count"]
+    )
+    total_max_height = int(
+        root.attrs.get("anchored_branch_max_height_success_count", 0)
+    ) + int(batch_metrics["max_height_success_count"])
+    total_max_consec = float(
+        root.attrs.get("anchored_branch_max_consecutive_gate_steps_sum", 0.0)
+    ) + float(batch_metrics["max_consecutive_gate_steps_sum"])
+    total_max_lift = float(root.attrs.get("anchored_branch_max_lift_sum", 0.0)) + float(
+        batch_metrics["max_lift_sum"]
+    )
+    total_final_lift = float(
+        root.attrs.get("anchored_branch_final_lift_sum", 0.0)
+    ) + float(batch_metrics["final_lift_sum"])
+
+    root.attrs["anchored_branch_metric_count"] = total_count
+    root.attrs["anchored_branch_stable_success_count"] = total_stable
+    root.attrs["anchored_branch_max_height_success_count"] = total_max_height
+    root.attrs["anchored_branch_max_consecutive_gate_steps_sum"] = total_max_consec
+    root.attrs["anchored_branch_max_lift_sum"] = total_max_lift
+    root.attrs["anchored_branch_final_lift_sum"] = total_final_lift
+    root.attrs["anchored_branch_stable_success_rate"] = (
+        total_stable / total_count if total_count > 0 else 0.0
+    )
+    root.attrs["anchored_branch_max_height_success_rate"] = (
+        total_max_height / total_count if total_count > 0 else 0.0
+    )
+    root.attrs["anchored_branch_max_consecutive_gate_steps_mean"] = (
+        total_max_consec / total_count if total_count > 0 else 0.0
+    )
+    root.attrs["anchored_branch_max_lift_mean"] = (
+        total_max_lift / total_count if total_count > 0 else 0.0
+    )
+    root.attrs["anchored_branch_final_lift_mean"] = (
+        total_final_lift / total_count if total_count > 0 else 0.0
+    )
+
+
+def _update_anchored_verified_attrs(root, batch_metrics: dict) -> None:
+    attempted = int(root.attrs.get("anchored_verified_branches_attempted", 0)) + int(
+        batch_metrics.get("attempted", 0)
+    )
+    written = int(root.attrs.get("anchored_verified_branches_written", 0)) + int(
+        batch_metrics.get("written", 0)
+    )
+    filtered = int(root.attrs.get("anchored_verified_branches_filtered", 0)) + int(
+        batch_metrics.get("filtered", 0)
+    )
+    timeout = int(root.attrs.get("anchored_verified_branches_timeout", 0)) + int(
+        batch_metrics.get("timeout", 0)
+    )
+    saved_len_count = int(root.attrs.get("anchored_verified_saved_len_count", 0)) + int(
+        batch_metrics.get("saved_len_count", 0)
+    )
+    saved_len_sum = float(root.attrs.get("anchored_verified_saved_len_sum", 0.0)) + float(
+        batch_metrics.get("saved_len_sum", 0.0)
+    )
+    recovery_count = int(
+        root.attrs.get("anchored_verified_recovery_step_count", 0)
+    ) + int(batch_metrics.get("recovery_step_count", 0))
+    recovery_sum = float(
+        root.attrs.get("anchored_verified_recovery_step_sum", 0.0)
+    ) + float(batch_metrics.get("recovery_step_sum", 0.0))
+
+    root.attrs["anchored_verified_branches_attempted"] = attempted
+    root.attrs["anchored_verified_branches_written"] = written
+    root.attrs["anchored_verified_branches_filtered"] = filtered
+    root.attrs["anchored_verified_branches_timeout"] = timeout
+    root.attrs["anchored_verified_success_rate"] = (
+        written / attempted if attempted > 0 else 0.0
+    )
+    root.attrs["anchored_verified_saved_len_count"] = saved_len_count
+    root.attrs["anchored_verified_saved_len_sum"] = saved_len_sum
+    root.attrs["anchored_verified_saved_len_mean"] = (
+        saved_len_sum / saved_len_count if saved_len_count > 0 else 0.0
+    )
+    root.attrs["anchored_verified_recovery_step_count"] = recovery_count
+    root.attrs["anchored_verified_recovery_step_sum"] = recovery_sum
+    root.attrs["anchored_verified_recovery_step_mean"] = (
+        recovery_sum / recovery_count if recovery_count > 0 else 0.0
     )
 
 
@@ -2470,15 +2629,34 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
     written_episodes = 0
     discarded_unsuccessful = 0
     discarded_invalid = 0
-    anchored_base_rollouts_attempted = 0
-    anchored_base_rollouts_succeeded = 0
-    anchored_branches_attempted = 0
-    anchored_branches_written = 0
-    anchored_branches_aborted = 0
-    anchored_saved_transitions = 0
+    anchored_base_rollouts_attempted = int(
+        root.attrs.get("anchored_base_rollouts_attempted", 0)
+    )
+    anchored_base_rollouts_succeeded = int(
+        root.attrs.get("anchored_base_rollouts_succeeded", 0)
+    )
+    anchored_branches_attempted = int(root.attrs.get("anchored_branches_attempted", 0))
+    anchored_branches_written = int(root.attrs.get("anchored_branches_written", 0))
+    anchored_branches_aborted = int(root.attrs.get("anchored_branches_aborted", 0))
+    anchored_saved_transitions = int(root.attrs.get("anchored_saved_transitions", 0))
     total_env_steps = 0
     t_start = time.time()
     noise_sampler = _build_group_noise_sampler(args)
+    base_pickup_timing_metrics = {
+        "attempted_episodes": 0,
+        "gate_count": 0,
+        "gate_step_sum": 0.0,
+        "hold_count": 0,
+        "hold_step_sum": 0.0,
+    }
+    branch_metric_stats = {
+        "count": 0,
+        "stable_success_count": 0,
+        "max_height_success_count": 0,
+        "max_consecutive_gate_steps_sum": 0.0,
+        "max_lift_sum": 0.0,
+        "final_lift_sum": 0.0,
+    }
 
     try:
         while True:
@@ -2495,7 +2673,6 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
             if env.viewer is not None and env.gym.query_viewer_has_closed(env.viewer):
                 break
 
-            rollout_idx = attempted_rollouts
             start_pose = _sample_start_pose(rng, nominal_start_pose, args.xy_range)
             goal_pose = list(start_pose)
             goal_pose[2] += LIFT_HEIGHT_M
@@ -2529,9 +2706,20 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
             object_start_z = float(env.object_pose[0, 2].item())
             goal_z = float(goal_pose[2])
             object_zs: List[float] = []
+            pickup_gate_history: List[bool] = []
             branch_buffers: List = []
             branch_noise_metrics = _zero_noise_metrics()
-            branch_stats = {"attempted": 0, "aborted": 0}
+            branch_stats = {
+                "attempted": 0,
+                "aborted": 0,
+                "filtered": 0,
+                "timeout": 0,
+                "written": 0,
+                "saved_len_count": 0,
+                "saved_len_sum": 0.0,
+                "recovery_step_count": 0,
+                "recovery_step_sum": 0.0,
+            }
             trigger_steps = set(
                 sample_branch_trigger_steps(
                     rng=rng,
@@ -2563,6 +2751,11 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
                                 deterministic_actions=True,
                             ),
                             sample_group_noise=noise_sampler,
+                            total_steps=(
+                                args.horizon - step
+                                if anchored_config.collection_mode == "verified_full"
+                                else None
+                            ),
                         )
                     obs = _restore_branch_snapshot(env, policy, snapshot)
                     rollout_env_steps += branch_result.steps_executed
@@ -2570,12 +2763,85 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
                         viewer_closed = True
                         break
                     if branch_result.success:
-                        if branch_result.saved_transitions > 0:
-                            branch_buffers.append(branch_result.buffer)
+                        branch_metrics = compute_pickup_success_metrics(
+                            object_zs=branch_result.object_zs,
+                            object_start_z=object_start_z,
+                            goal_z=goal_z,
+                            hold_steps=args.pickup_success_hold_steps,
+                        )
+                        branch_metric_stats["count"] += 1
+                        branch_metric_stats["stable_success_count"] += int(
+                            branch_metrics.stable_success
+                        )
+                        branch_metric_stats["max_height_success_count"] += int(
+                            branch_metrics.max_height_success
+                        )
+                        branch_metric_stats["max_consecutive_gate_steps_sum"] += float(
+                            branch_metrics.max_consecutive_gate_steps
+                        )
+                        branch_metric_stats["max_lift_sum"] += float(
+                            branch_metrics.max_lift_m
+                        )
+                        branch_metric_stats["final_lift_sum"] += float(
+                            branch_metrics.final_lift_m
+                        )
+                        branch_ok = (
+                            branch_metrics.stable_success
+                            if args.pickup_success_mode == "stable_hold"
+                            else branch_metrics.max_height_success
+                        )
+                        if (
+                            anchored_config.collection_mode == "verified_full"
+                            and not branch_metrics.stable_success
+                        ):
+                            branch_stats["timeout"] += 1
+                        if branch_ok and branch_result.saved_transitions > 0:
+                            saved_buffer = branch_result.buffer
+                            if anchored_config.collection_mode == "verified_full":
+                                branch_gate_history = [
+                                    bool(
+                                        z >= goal_z - PICKUP_SUCCESS_GOAL_Z_TOLERANCE_M
+                                        and z - object_start_z >= PICKUP_SUCCESS_MIN_LIFT_M
+                                    )
+                                    for z in branch_result.object_zs
+                                ]
+                                branch_hold_step = _first_hold_step(
+                                    branch_gate_history,
+                                    args.pickup_success_hold_steps,
+                                )
+                                if branch_hold_step is None:
+                                    branch_stats["filtered"] += 1
+                                    continue
+                                save_end = min(
+                                    branch_result.saved_transitions,
+                                    max(
+                                        int(anchored_config.min_saved_steps),
+                                        int(branch_hold_step) + 1,
+                                    ),
+                                    int(anchored_config.max_saved_steps),
+                                )
+                                if save_end < int(anchored_config.min_saved_steps):
+                                    branch_stats["filtered"] += 1
+                                    continue
+                                saved_buffer = branch_result.buffer.slice(0, save_end)
+                                branch_stats["saved_len_count"] += 1
+                                branch_stats["saved_len_sum"] += float(save_end)
+                                branch_stats["recovery_step_count"] += 1
+                                branch_stats["recovery_step_sum"] += float(
+                                    max(
+                                        0,
+                                        int(branch_hold_step)
+                                        - int(anchored_config.perturb_steps)
+                                        + 1,
+                                    )
+                                )
+                            branch_buffers.append(saved_buffer)
                             _accumulate_noise_metrics(
                                 branch_noise_metrics,
                                 branch_result.noise_metrics,
                             )
+                        else:
+                            branch_stats["filtered"] += 1
                     else:
                         branch_stats["aborted"] += 1
 
@@ -2583,7 +2849,12 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
                 obs_dict, _, done, _ = env.step(action_t)
                 obs = obs_dict["obs"]
                 rollout_env_steps += 1
-                object_zs.append(float(env.object_pose[0, 2].item()))
+                object_z = float(env.object_pose[0, 2].item())
+                object_zs.append(object_z)
+                pickup_gate_history.append(bool(
+                    object_z >= goal_z - PICKUP_SUCCESS_GOAL_Z_TOLERANCE_M
+                    and object_z - object_start_z >= PICKUP_SUCCESS_MIN_LIFT_M
+                ))
                 if bool(done[0].item()):
                     break
 
@@ -2596,10 +2867,29 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
             if viewer_closed:
                 break
 
-            success = _episode_pickup_success(
+            pickup_metrics = compute_pickup_success_metrics(
                 object_zs=object_zs,
                 object_start_z=object_start_z,
                 goal_z=goal_z,
+                pickup_gate_history=pickup_gate_history,
+                hold_steps=args.pickup_success_hold_steps,
+            )
+            base_pickup_timing_metrics["attempted_episodes"] += 1
+            if pickup_metrics.first_gate_step is not None:
+                base_pickup_timing_metrics["gate_count"] += 1
+                base_pickup_timing_metrics["gate_step_sum"] += float(
+                    pickup_metrics.first_gate_step
+                )
+            hold_step = _first_hold_step(
+                pickup_gate_history, args.pickup_success_hold_steps
+            )
+            if hold_step is not None:
+                base_pickup_timing_metrics["hold_count"] += 1
+                base_pickup_timing_metrics["hold_step_sum"] += float(hold_step)
+            success = (
+                pickup_metrics.stable_success
+                if args.pickup_success_mode == "stable_hold"
+                else pickup_metrics.max_height_success
             )
             if success:
                 successful_completions += 1
@@ -2619,6 +2909,7 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
                         wrote_branch = True
                         written_episodes += 1
                         anchored_branches_written += 1
+                        branch_stats["written"] += 1
                         anchored_saved_transitions += int(img_ep.shape[0])
                     else:
                         discarded_invalid += 1
@@ -2641,8 +2932,31 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
             root.attrs["horizon"] = args.horizon
             root.attrs["lift_height_m"] = LIFT_HEIGHT_M
             root.attrs["start_z_offset"] = args.start_z_offset
+            root.attrs["pickup_success_mode"] = args.pickup_success_mode
             root.attrs["pickup_success_hold_steps"] = args.pickup_success_hold_steps
             root.attrs["collection_task"] = "pickup_only"
+            root.attrs["anchored_branches_filtered"] = int(
+                root.attrs.get("anchored_branches_filtered", 0)
+            ) + int(branch_stats["filtered"])
+            _update_pickup_timing_attrs(root, base_pickup_timing_metrics)
+            base_pickup_timing_metrics = {
+                "attempted_episodes": 0,
+                "gate_count": 0,
+                "gate_step_sum": 0.0,
+                "hold_count": 0,
+                "hold_step_sum": 0.0,
+            }
+            _update_anchored_branch_metric_attrs(root, branch_metric_stats)
+            if anchored_config.collection_mode == "verified_full":
+                _update_anchored_verified_attrs(root, branch_stats)
+            branch_metric_stats = {
+                "count": 0,
+                "stable_success_count": 0,
+                "max_height_success_count": 0,
+                "max_consecutive_gate_steps_sum": 0.0,
+                "max_lift_sum": 0.0,
+                "final_lift_sum": 0.0,
+            }
             update_anchored_root_attrs(
                 root,
                 variant=args.variant,
@@ -2658,7 +2972,9 @@ def _collect_pickup_anchored(args: argparse.Namespace) -> None:
                 f"[stage5-pickup-anchored] transitions={n_transitions}/{args.target_transitions} "
                 f"episodes={n_episodes} rollouts={attempted_rollouts} "
                 f"base_successes={successful_completions} branches_written={anchored_branches_written} "
-                f"branches_aborted={anchored_branches_aborted} rate={rate:.1f} trans/sec "
+                f"branches_aborted={anchored_branches_aborted} "
+                f"branches_filtered={root.attrs['anchored_branches_filtered']} "
+                f"rate={rate:.1f} trans/sec "
                 f"eta={eta_min:.1f}min",
                 flush=True,
             )
@@ -3603,6 +3919,16 @@ def parse_args() -> argparse.Namespace:
         default=PICKUP_SUCCESS_HOLD_STEPS,
     )
     parser.add_argument(
+        "--pickup-success-mode",
+        choices=["max_height", "stable_hold"],
+        default="max_height",
+        help=(
+            "max_height preserves the legacy pickup gate. stable_hold requires "
+            "the pickup gate for --pickup-success-hold-steps consecutive steps "
+            "before writing pickup/anchored data."
+        ),
+    )
+    parser.add_argument(
         "--variant",
         choices=["clean", "noisy_clean", "noisy_noisy"],
         default="clean",
@@ -3630,10 +3956,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ou-mu", type=float, default=0.0)
     parser.add_argument("--ou-dt", type=float, default=1.0)
     parser.add_argument("--anchored-branches-per-rollout", type=int, default=3)
+    parser.add_argument(
+        "--anchored-collection-mode",
+        choices=["fixed_segment", "verified_full"],
+        default="fixed_segment",
+    )
     parser.add_argument("--anchored-branch-min-step", type=int, default=10)
     parser.add_argument("--anchored-branch-max-step", type=str, default="auto")
+    parser.add_argument("--anchored-branch-gap", type=int, default=None)
     parser.add_argument("--anchored-perturb-steps", type=int, default=3)
     parser.add_argument("--anchored-recovery-steps", type=int, default=15)
+    parser.add_argument("--anchored-min-saved-steps", type=int, default=16)
+    parser.add_argument("--anchored-max-saved-steps", type=int, default=64)
     parser.add_argument("--release-steps", type=int, default=DEFAULT_RELEASE_STEPS)
     parser.add_argument(
         "--release-arm-mode",

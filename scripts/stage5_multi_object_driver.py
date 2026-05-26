@@ -188,18 +188,24 @@ def _run_one(spec: ObjectSpec, args: argparse.Namespace) -> None:
             cmd.extend(
                 [
                     "--anchored-branches-per-rollout", str(args.anchored_branches_per_rollout),
+                    "--anchored-collection-mode", args.anchored_collection_mode,
                     "--anchored-branch-min-step", str(args.anchored_branch_min_step),
                     "--anchored-branch-max-step", str(args.anchored_branch_max_step),
                     "--anchored-perturb-steps", str(args.anchored_perturb_steps),
                     "--anchored-recovery-steps", str(args.anchored_recovery_steps),
+                    "--anchored-min-saved-steps", str(args.anchored_min_saved_steps),
+                    "--anchored-max-saved-steps", str(args.anchored_max_saved_steps),
                 ]
             )
+            if args.anchored_branch_gap is not None:
+                cmd.extend(["--anchored-branch-gap", str(args.anchored_branch_gap)])
 
     if args.collection_type in {"pickup", "pick_place"}:
         if args.variant != "clean":
             cmd.extend(
                 [
                     "--pickup-success-hold-steps", str(args.pickup_success_hold_steps),
+                    "--pickup-success-mode", args.pickup_success_mode,
                 ]
             )
     elif args.collection_type == "pick_place_release":
@@ -285,6 +291,11 @@ def main() -> None:
     p.add_argument("--variant", choices=("clean", "noisy_clean", "noisy_noisy"), default="clean")
     p.add_argument("--pickup-success-hold-steps", type=int, default=5)
     p.add_argument(
+        "--pickup-success-mode",
+        choices=("max_height", "stable_hold"),
+        default="max_height",
+    )
+    p.add_argument(
         "--noise-strategy",
         choices=("continuous_ou", "anchored_recovery"),
         default="continuous_ou",
@@ -301,10 +312,18 @@ def main() -> None:
     p.add_argument("--ou-mu", type=float, default=0.0)
     p.add_argument("--ou-dt", type=float, default=1.0)
     p.add_argument("--anchored-branches-per-rollout", type=int, default=3)
+    p.add_argument(
+        "--anchored-collection-mode",
+        choices=("fixed_segment", "verified_full"),
+        default="fixed_segment",
+    )
     p.add_argument("--anchored-branch-min-step", type=int, default=10)
     p.add_argument("--anchored-branch-max-step", type=str, default="auto")
+    p.add_argument("--anchored-branch-gap", type=int, default=None)
     p.add_argument("--anchored-perturb-steps", type=int, default=3)
     p.add_argument("--anchored-recovery-steps", type=int, default=15)
+    p.add_argument("--anchored-min-saved-steps", type=int, default=16)
+    p.add_argument("--anchored-max-saved-steps", type=int, default=64)
     args = p.parse_args()
     _validate_mode_args(args)
 
