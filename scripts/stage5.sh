@@ -10,7 +10,7 @@
 
 mkdir -p logs/slurm
 
-cd /move/u/karenvo/Projects/simtoolreal   
+cd /move/u/chrzhang/simtooldiff
 
 # ========================
 # ACTIVATE VENV
@@ -55,6 +55,30 @@ python scripts/stage5_collect_dataset.py \
 #   --device cuda \
 #   --resume \
 #   --save-preview-every 25
+
+# python scripts/stage5_multi_object_driver.py \
+#   --collection-type pick_place_release \
+#   --split train \
+#   --output-zarr data/anchored_pick_place_release_train.zarr \
+#   --per-object-transitions 15000 \
+#   --num-envs 1 \
+#   --horizon 325 \
+#   --xy-range 0.10 \
+#   --start-z-offset 0.0 \
+#   --lift-height 0.20 \
+#   --lateral-offset-range 0.15 \
+#   --place-height 0.02 \
+#   --place-hold-goals 10 \
+#   --table-x-half-extent 0.30 \
+#   --table-x-inset-margin 0.06 \
+#   --min-effective-transport 0.05 \
+#   --variant noisy_clean \
+#   --noise-strategy anchored_recovery \
+#   --noise-scale 1.0 \
+#   --anchored-branches-per-rollout 3 \
+#   --anchored-perturb-steps 3 \
+#   --anchored-recovery-steps 15 \
+#   --seed 0
 
 # ========================
 # VERIFY DATASET

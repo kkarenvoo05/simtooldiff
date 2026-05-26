@@ -31,6 +31,9 @@ conda activate str
 
 # ------ TRAIN ------
 
+# pick_place and pick_place_release now route through
+# scripts/collect_dataset_pick_place_release.py via the multi-object driver.
+
 # i used seed 0 the first time i ran this, and then 1000 for the second run because i wanted to double the amount of data
 # python scripts/stage5_multi_object_driver.py \
 #     --split train \
@@ -44,6 +47,7 @@ conda activate str
 
 # python scripts/stage5_multi_object_driver.py \
 #     --split ood \
+#     --variant noisy_clean \
 #     --output-zarr data/stage5_ood.zarr \
 #     --per-object-transitions 2000 \
 #     --num-envs 8 \
