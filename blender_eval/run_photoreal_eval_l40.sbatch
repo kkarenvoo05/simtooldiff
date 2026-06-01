@@ -33,6 +33,7 @@ OUT_ROOT="${OUT_ROOT:-$SIMTOOLDIFF_ROOT/data/blender_eval/photoreal_l40}"
 MODE="${MODE:-worker}"
 SPLIT="${SPLIT:-train}"
 ARRAY_RUN_ID="${ARRAY_RUN_ID:-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-manual}}}"
+EVAL_TASK="${EVAL_TASK:-pickup}"
 
 OBJ_CATEGORY="${OBJ_CATEGORY:-hammer}"
 OBJ_NAME="${OBJ_NAME:-claw_hammer}"
@@ -42,7 +43,7 @@ CATEGORY_ID="${CATEGORY_ID:-2}"
 
 EPISODES_PER_OBJECT="${EPISODES_PER_OBJECT:-1}"
 NUM_ENVS="${NUM_ENVS:-1}"
-HORIZON="${HORIZON:-250}"
+HORIZON="${HORIZON:-}"
 XY_RANGE="${XY_RANGE:-0.10}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda:0}"
@@ -144,18 +145,19 @@ fi
 echo "Checkpoint: $CKPT"
 echo "Output root: $OUT_ROOT"
 echo "Mode: $MODE"
+echo "Eval task: $EVAL_TASK"
 nvidia-smi || true
 
 COMMON_ARGS=(
   --checkpoint "$CKPT"
   --renderer blender
+  --eval-task "$EVAL_TASK"
   --engine "$ENGINE"
   --samples "$SAMPLES"
   --cycles-device "$CYCLES_DEVICE"
   --blender "$BLENDER"
   --episodes-per-object "$EPISODES_PER_OBJECT"
   --num-envs "$NUM_ENVS"
-  --horizon "$HORIZON"
   --xy-range "$XY_RANGE"
   --seed "$SEED"
   --device "$DEVICE"
@@ -163,6 +165,9 @@ COMMON_ARGS=(
   --max-failure-previews "$MAX_FAILURE_PREVIEWS"
   --gif-fps "$GIF_FPS"
 )
+if [[ -n "$HORIZON" ]]; then
+  COMMON_ARGS+=(--horizon "$HORIZON")
+fi
 
 JOB_ID="${SLURM_JOB_ID:-manual}"
 
@@ -229,20 +234,25 @@ PY
     RESULT_DIR="$RUN_DIR/object_results"
     VIDEO_ROOT="$RUN_DIR/photoreal_${SPLIT}_videos"
     echo "Aggregating array results from $RESULT_DIR"
-    "$PY" blender_eval/aggregate_eval_results.py \
-      --split "$SPLIT" \
-      --checkpoint "$CKPT" \
-      --result-dir "$RESULT_DIR" \
-      --output-json "$RUN_DIR/photoreal_${SPLIT}.json" \
-      --renderer blender \
-      --engine "$ENGINE" \
-      --samples "$SAMPLES" \
-      --cycles-device "$CYCLES_DEVICE" \
-      --episodes-per-object "$EPISODES_PER_OBJECT" \
-      --num-envs "$NUM_ENVS" \
-      --xy-range "$XY_RANGE" \
-      --horizon "$HORIZON" \
+    AGG_ARGS=(
+      --split "$SPLIT"
+      --checkpoint "$CKPT"
+      --result-dir "$RESULT_DIR"
+      --output-json "$RUN_DIR/photoreal_${SPLIT}.json"
+      --renderer blender
+      --engine "$ENGINE"
+      --samples "$SAMPLES"
+      --cycles-device "$CYCLES_DEVICE"
+      --episodes-per-object "$EPISODES_PER_OBJECT"
+      --num-envs "$NUM_ENVS"
+      --xy-range "$XY_RANGE"
       --video-dir "$VIDEO_ROOT"
+      --eval-task "$EVAL_TASK"
+    )
+    if [[ -n "$HORIZON" ]]; then
+      AGG_ARGS+=(--horizon "$HORIZON")
+    fi
+    "$PY" blender_eval/aggregate_eval_results.py "${AGG_ARGS[@]}"
     ;;
 
   driver)
