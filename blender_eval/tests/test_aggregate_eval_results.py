@@ -70,3 +70,46 @@ def test_aggregate_results_errors_on_missing_object(tmp_path):
       result_dir=result_dir,
       output_json=tmp_path / "photoreal_ood.json",
     )
+
+
+def test_aggregate_pick_place_release_totals(tmp_path, monkeypatch):
+  from stage5_multi_object_driver import ObjectSpec
+
+  spec = ObjectSpec(4, 2, "hammer", "claw_hammer", "swing_down")
+  result_dir = tmp_path / "object_results"
+  result_dir.mkdir()
+  (result_dir / "claw_hammer.json").write_text(json.dumps({
+    "object_id": spec.object_id,
+    "category_id": spec.category_id,
+    "object_name": spec.object_name,
+    "object_category": spec.object_category,
+    "task_name": spec.task_name,
+    "eval_task": "pick_place_release",
+    "renderer": "blender",
+    "attempted": 4,
+    "succeeded": 2,
+    "stable_succeeded": 3,
+    "pick_place_succeeded": 3,
+    "release_goal_succeeded": 2,
+    "release_stable_succeeded": 3,
+  }))
+  monkeypatch.setattr(
+    "blender_eval.aggregate_eval_results._split",
+    lambda split: [spec],
+  )
+
+  summary = aggregate_results(
+    split="train",
+    checkpoint=tmp_path / "checkpoint.ckpt",
+    result_dir=result_dir,
+    output_json=tmp_path / "photoreal_ppr.json",
+  )
+
+  assert summary["eval_task"] == "pick_place_release"
+  assert summary["total_attempted"] == 4
+  assert summary["total_succeeded"] == 2
+  assert summary["total_pick_place_succeeded"] == 3
+  assert summary["total_release_goal_succeeded"] == 2
+  assert summary["total_release_stable_succeeded"] == 3
+  assert summary["pick_place_success_rate"] == 0.75
+  assert summary["release_goal_success_rate"] == 0.5

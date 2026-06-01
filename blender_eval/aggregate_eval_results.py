@@ -53,6 +53,7 @@ def aggregate_results(
   render_width: Optional[int] = None,
   render_height: Optional[int] = None,
   video_dir: Optional[Path] = None,
+  eval_task: Optional[str] = None,
 ) -> dict:
   specs = _split(split)
   by_name = _load_result_map(result_dir, result_glob)
@@ -66,10 +67,18 @@ def aggregate_results(
   per_object = [by_name[spec.object_name] for spec in specs]
   total_attempted = sum(int(r.get("attempted", 0)) for r in per_object)
   total_succeeded = sum(int(r.get("succeeded", 0)) for r in per_object)
+  total_stable_succeeded = sum(int(r.get("stable_succeeded", 0)) for r in per_object)
+  total_pick_place_succeeded = sum(int(r.get("pick_place_succeeded", 0)) for r in per_object)
+  total_release_goal_succeeded = sum(int(r.get("release_goal_succeeded", 0)) for r in per_object)
+  total_release_stable_succeeded = sum(
+    int(r.get("release_stable_succeeded", 0)) for r in per_object)
   overall = total_succeeded / max(total_attempted, 1)
+  stable_overall = total_stable_succeeded / max(total_attempted, 1)
+  eval_task = eval_task if eval_task is not None else (_first_non_none(per_object, "eval_task") or "pickup")
 
   summary = {
     "checkpoint": str(checkpoint),
+    "eval_task": eval_task,
     "renderer": renderer if renderer is not None else _first_non_none(per_object, "renderer"),
     "blend_file": (
       str(blend_file) if blend_file is not None else _first_non_none(per_object, "blend_file")
@@ -99,8 +108,22 @@ def aggregate_results(
     ),
     "video_dir": str(video_dir) if video_dir is not None else None,
     "overall_success_rate": overall,
+    "stable_success_rate": stable_overall,
     "total_attempted": total_attempted,
     "total_succeeded": total_succeeded,
+    "total_stable_succeeded": total_stable_succeeded,
+    "total_pick_place_succeeded": total_pick_place_succeeded,
+    "total_release_goal_succeeded": total_release_goal_succeeded,
+    "total_release_stable_succeeded": total_release_stable_succeeded,
+    "pick_place_success_rate": (
+      total_pick_place_succeeded / max(total_attempted, 1)
+      if eval_task == "pick_place_release" else None
+    ),
+    "release_goal_success_rate": (
+      total_release_goal_succeeded / max(total_attempted, 1)
+      if eval_task == "pick_place_release" else None
+    ),
+    "pickup_success_hold_steps": _first_non_none(per_object, "pickup_success_hold_steps"),
     "per_object": per_object,
   }
   output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +151,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--render-width", type=int, default=None)
   parser.add_argument("--render-height", type=int, default=None)
   parser.add_argument("--video-dir", type=Path, default=None)
+  parser.add_argument("--eval-task", choices=("pickup", "pick_place_release"), default=None)
   return parser.parse_args()
 
 
@@ -152,11 +176,14 @@ def main() -> None:
     render_width=args.render_width,
     render_height=args.render_height,
     video_dir=args.video_dir,
+    eval_task=args.eval_task,
   )
   print(
     f"[aggregate-eval] {summary['split']} "
     f"{summary['total_succeeded']}/{summary['total_attempted']} = "
-    f"{summary['overall_success_rate']:.1%}"
+    f"{summary['overall_success_rate']:.1%} "
+    f"stable={summary['total_stable_succeeded']}/{summary['total_attempted']} = "
+    f"{summary['stable_success_rate']:.1%}"
   )
   print(f"[aggregate-eval] saved {args.output_json}")
 
