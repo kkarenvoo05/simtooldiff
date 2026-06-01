@@ -22,9 +22,9 @@ date
 
 SIMTOOLDIFF_ROOT="${SIMTOOLDIFF_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CS224R_ROOT="${CS224R_ROOT:-$(cd "$SIMTOOLDIFF_ROOT/.." && pwd)}"
-DIFFUSION_POLICY_ROOT="${DIFFUSION_POLICY_ROOT:-/move/u/chrzhang/diffusion_policy}"
+DIFFUSION_POLICY_ROOT="${DIFFUSION_POLICY_ROOT:-$CS224R_ROOT/diffusion_policy}"
 
-CKPT="${CKPT:-$DIFFUSION_POLICY_ROOT/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt}"
+CKPT="${CKPT:-}"
 OUT_ROOT="${OUT_ROOT:-$SIMTOOLDIFF_ROOT/data/blender_eval/photoreal_l40}"
 
 # MODE=worker runs one object. MODE=driver runs a full split sequentially.
@@ -62,8 +62,8 @@ BLENDER="${BLENDER:-$BLENDER_DIR/blender}"
 DOWNLOAD_BLENDER="${DOWNLOAD_BLENDER:-1}"
 BLENDER_URL="${BLENDER_URL:-https://download.blender.org/release/Blender4.2/blender-${BLENDER_VERSION}-linux-x64.tar.xz}"
 
-# Existing MOVE cluster env used by run.sh. Override if needed.
-CONDA_SH="${CONDA_SH:-/nlp/scr/chrzhang/miniconda3/etc/profile.d/conda.sh}"
+# Override these for your environment. If VENV is set, it takes precedence.
+CONDA_SH="${CONDA_SH:-}"
 CONDA_ENV="${CONDA_ENV:-str}"
 VENV="${VENV:-}"
 
@@ -71,6 +71,11 @@ VENV="${VENV:-}"
 
 cd "$SIMTOOLDIFF_ROOT"
 mkdir -p logs "$OUT_ROOT"
+
+if [[ -z "$CKPT" ]]; then
+  echo "Set CKPT=/path/to/trained_policy.ckpt before submitting this job." >&2
+  exit 2
+fi
 
 if [[ ! -f "$CKPT" ]]; then
   echo "Checkpoint not found: $CKPT" >&2
@@ -87,8 +92,8 @@ if [[ -n "$VENV" ]]; then
   PY_LIBDIR="$("$PY" -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")"
   export LD_LIBRARY_PATH="$PY_LIBDIR:${LD_LIBRARY_PATH:-}"
 else
-  if [[ ! -f "$CONDA_SH" ]]; then
-    echo "Conda activation script not found: $CONDA_SH" >&2
+  if [[ -z "$CONDA_SH" || ! -f "$CONDA_SH" ]]; then
+    echo "Conda activation script not found: ${CONDA_SH:-unset}" >&2
     echo "Set VENV=/path/to/python3.8/venv or CONDA_SH=/path/to/conda.sh." >&2
     exit 3
   fi

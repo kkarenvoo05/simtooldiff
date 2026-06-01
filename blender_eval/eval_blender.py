@@ -331,8 +331,8 @@ def run_worker(args) -> None:
 
   # --- Load policy from checkpoint ---
   ckpt_path = Path(args.checkpoint).expanduser().resolve()
-  # Keep the full checkpoint payload on CPU. The epoch-50 checkpoint is ~4 GB
-  # and includes tensors that are only needed for loading; putting the whole
+  # Keep the full checkpoint payload on CPU. Large checkpoints can include
+  # tensors that are only needed for loading; putting the whole
   # payload on CUDA can exhaust 8 GB GPUs before IsaacGym even initializes.
   payload = torch.load(ckpt_path.open("rb"), pickle_module=dill, map_location="cpu")
   cfg = payload["cfg"]

@@ -22,7 +22,7 @@ python blender_eval/aggregate_eval_results.py
 Use the `simtooldiff` repo branch that contains the local Blender eval changes. In the Stanford workspace this branch is currently:
 
 ```bash
-cd /move/u/caydengu/Projects/cs224r/simtooldiff
+cd /path/to/simtooldiff
 git branch --show-current
 # blender-eval
 ```
@@ -550,4 +550,3 @@ python blender_eval/eval_blender.py \
 ```
 
 If both smoke runs complete and write JSON, proceed to the full driver commands above.
-
