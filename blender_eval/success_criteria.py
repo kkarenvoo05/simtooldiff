@@ -74,6 +74,8 @@ def compute_pickup_success_metrics(
   goal_z: float,
   pickup_gate_history: Optional[List[bool]] = None,
   hold_steps: int = PICKUP_SUCCESS_HOLD_STEPS,
+  goal_z_tolerance: float = PICKUP_SUCCESS_GOAL_Z_TOLERANCE_M,
+  min_lift: float = PICKUP_SUCCESS_MIN_LIFT_M,
 ) -> PickupSuccessMetrics:
   """Compute original pickup success and stable-hold diagnostic success.
 
@@ -94,15 +96,15 @@ def compute_pickup_success_metrics(
   max_object_z = max(object_zs)
   max_lift_m = max_object_z - object_start_z
   success = bool(
-    max_object_z >= goal_z - PICKUP_SUCCESS_GOAL_Z_TOLERANCE_M
-    and max_lift_m >= PICKUP_SUCCESS_MIN_LIFT_M
+    max_object_z >= goal_z - goal_z_tolerance
+    and max_lift_m >= min_lift
   )
 
   if pickup_gate_history is None:
     pickup_gate_history = [
       bool(
-        z >= goal_z - PICKUP_SUCCESS_GOAL_Z_TOLERANCE_M
-        and z - object_start_z >= PICKUP_SUCCESS_MIN_LIFT_M
+        z >= goal_z - goal_z_tolerance
+        and z - object_start_z >= min_lift
       )
       for z in object_zs
     ]
@@ -139,4 +141,6 @@ def stable_pickup_success(
     goal_z=goal_z,
     pickup_gate_history=gate_history,
     hold_steps=hold_steps,
+    goal_z_tolerance=goal_z_tolerance,
+    min_lift=min_lift,
   ).stable_success

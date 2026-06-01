@@ -10,6 +10,7 @@ from blender_eval.eval_blender import (
   LIGHTING_PRESET_ENV,
   _apply_driver_defaults,
   _apply_photoreal_defaults,
+  _record_release_failure,
   _run_one,
   run_driver,
   run_worker,
@@ -194,6 +195,7 @@ def test_run_one_passes_blender_worker_args_and_video_subdir(tmp_path, monkeypat
     episodes_per_object=1,
     horizon=250,
     xy_range=0.1,
+    start_z_offset=0.015,
     seed=10,
     device="cuda:0",
     result_json=result_path,
@@ -218,6 +220,7 @@ def test_run_one_passes_blender_worker_args_and_video_subdir(tmp_path, monkeypat
   assert cmd[cmd.index("--blend-file") + 1] == str(DEFAULT_BLEND_FILE)
   assert cmd[cmd.index("--lighting-preset") + 1] == "softbox_grid"
   assert cmd[cmd.index("--video-dir") + 1] == str(tmp_path / "videos" / "claw_hammer")
+  assert cmd[cmd.index("--start-z-offset") + 1] == "0.015"
   assert cmd[cmd.index("--seed") + 1] == "14"
   assert "LD_LIBRARY_PATH" in env
   assert result["renderer"] == "blender"
@@ -303,3 +306,15 @@ def test_run_one_passes_pick_place_release_worker_args(tmp_path, monkeypatch):
   assert cmd[cmd.index("--start-z-offset") + 1] == "0.0"
   assert cmd[cmd.index("--seed") + 1] == "14"
   assert result["eval_task"] == "pick_place_release"
+
+
+def test_release_failure_breakdown_counts_drop_reattempt_once():
+  failure_breakdown = {"drop_reattempt": 0}
+
+  _record_release_failure(
+    failure_breakdown,
+    release_success=False,
+    failure_stage="drop_reattempt",
+  )
+
+  assert failure_breakdown["drop_reattempt"] == 1

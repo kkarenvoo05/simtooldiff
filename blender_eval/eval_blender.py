@@ -62,6 +62,11 @@ def _first_non_none(per_object, key):
   return None
 
 
+def _record_release_failure(failure_breakdown: dict, release_success: bool, failure_stage) -> None:
+  if not release_success and failure_stage is not None:
+    failure_breakdown[failure_stage] = failure_breakdown.get(failure_stage, 0) + 1
+
+
 def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
   pickup_success_hold_steps = getattr(
     args, "pickup_success_hold_steps", DEFAULT_PICKUP_SUCCESS_HOLD_STEPS)
@@ -81,6 +86,7 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
     "--episodes-per-object", str(args.episodes_per_object),
     "--horizon", str(args.horizon),
     "--xy-range", str(args.xy_range),
+    "--start-z-offset", str(args.start_z_offset),
     "--seed", str(args.seed + spec.object_id),
     "--device", args.device,
     "--result-json", str(result_path),
@@ -91,7 +97,6 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
   ]
   if eval_task == "pick_place_release":
     cmd += [
-      "--start-z-offset", str(args.start_z_offset),
       "--lift-height", str(args.lift_height),
       "--place-height", str(args.place_height),
       "--place-hold-goals", str(args.place_hold_goals),
@@ -357,7 +362,10 @@ def run_worker(args) -> None:
 
   # --- Build env ---
   nominal_start_pose = _load_nominal_start_pose(
-    args.object_category, args.object_name, args.task_name
+    args.object_category,
+    args.object_name,
+    args.task_name,
+    start_z_offset=args.start_z_offset,
   )
   nominal_goal_pose = list(nominal_start_pose)
   nominal_goal_pose[2] += LIFT_HEIGHT_M
@@ -1037,10 +1045,7 @@ def run_pick_place_release_worker(args) -> None:
         release_stable_succeeded += 1
       if release_success:
         succeeded += 1
-      elif failure_stage is not None:
-        failure_breakdown[failure_stage] = failure_breakdown.get(failure_stage, 0) + 1
-      if reattempted_after_drop:
-        failure_breakdown["drop_reattempt"] += 1
+      _record_release_failure(failure_breakdown, release_success, failure_stage)
 
       final_metrics = {
         "steps": steps_executed,

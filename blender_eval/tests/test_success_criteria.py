@@ -84,3 +84,21 @@ class TestPickupSuccess:
       goal_z=0.60,
       hold_steps=3,
     )
+
+  def test_stable_pickup_success_uses_custom_thresholds_for_success(self):
+    assert stable_pickup_success(
+      [0.40, 0.55, 0.55, 0.55],
+      object_start_z=0.40,
+      goal_z=0.60,
+      goal_z_tolerance=0.05,
+      min_lift=0.10,
+      hold_steps=3,
+    )
+    assert not stable_pickup_success(
+      [0.40, 0.55, 0.55, 0.55],
+      object_start_z=0.40,
+      goal_z=0.60,
+      goal_z_tolerance=0.01,
+      min_lift=0.10,
+      hold_steps=3,
+    )
