@@ -66,16 +66,11 @@ def aggregate_results(
 
   per_object = [by_name[spec.object_name] for spec in specs]
   total_attempted = sum(int(r.get("attempted", 0)) for r in per_object)
-  total_succeeded = sum(int(r.get("succeeded", 0)) for r in per_object)
-  total_stable_succeeded = sum(int(r.get("stable_succeeded", 0)) for r in per_object)
-  total_pick_place_succeeded = sum(int(r.get("pick_place_succeeded", 0)) for r in per_object)
-  total_release_goal_succeeded = sum(int(r.get("release_goal_succeeded", 0)) for r in per_object)
-  total_release_stable_succeeded = sum(
-    int(r.get("release_stable_succeeded", 0)) for r in per_object)
-  overall = total_succeeded / max(total_attempted, 1)
-  stable_overall = total_stable_succeeded / max(total_attempted, 1)
   eval_task = eval_task if eval_task is not None else (_first_non_none(per_object, "eval_task") or "pickup")
 
+  # Common fields shared by both task types. Task-specific totals are added in
+  # the branches below so this matches eval_blender.py::run_driver exactly
+  # (so SLURM array->aggregate output == the local sequential driver output).
   summary = {
     "checkpoint": str(checkpoint),
     "eval_task": eval_task,
@@ -107,25 +102,57 @@ def aggregate_results(
       else _first_non_none(per_object, "render_height")
     ),
     "video_dir": str(video_dir) if video_dir is not None else None,
-    "overall_success_rate": overall,
-    "stable_success_rate": stable_overall,
     "total_attempted": total_attempted,
-    "total_succeeded": total_succeeded,
-    "total_stable_succeeded": total_stable_succeeded,
-    "total_pick_place_succeeded": total_pick_place_succeeded,
-    "total_release_goal_succeeded": total_release_goal_succeeded,
-    "total_release_stable_succeeded": total_release_stable_succeeded,
-    "pick_place_success_rate": (
-      total_pick_place_succeeded / max(total_attempted, 1)
-      if eval_task == "pick_place_release" else None
-    ),
-    "release_goal_success_rate": (
-      total_release_goal_succeeded / max(total_attempted, 1)
-      if eval_task == "pick_place_release" else None
-    ),
-    "pickup_success_hold_steps": _first_non_none(per_object, "pickup_success_hold_steps"),
     "per_object": per_object,
   }
+
+  if eval_task == "pick_place_release":
+    # Pose-based (diffusion-fair) aggregation, matching the per-object worker
+    # schema and Karen's eval. Headline rate is over VALID (non-degenerate)
+    # spawns: total_release_succeeded / total_valid_attempted.
+    total_valid_attempted = sum(int(r.get("valid_attempted", 0)) for r in per_object)
+    total_invalid_start = sum(int(r.get("invalid_start", 0)) for r in per_object)
+    total_release_succeeded = sum(int(r.get("release_succeeded", 0)) for r in per_object)
+    total_lifted = sum(int(r.get("lifted", 0)) for r in per_object)
+    total_transported = sum(int(r.get("transported", 0)) for r in per_object)
+    total_placed = sum(int(r.get("placed_near_goal", 0)) for r in per_object)
+    total_stable = sum(int(r.get("release_stable", 0)) for r in per_object)
+    merged_breakdown: Dict[str, int] = {}
+    for r in per_object:
+      for stage, n in (r.get("failure_breakdown") or {}).items():
+        merged_breakdown[stage] = merged_breakdown.get(stage, 0) + int(n)
+    summary.update({
+      "overall_release_success_rate": total_release_succeeded / max(total_valid_attempted, 1),
+      "total_valid_attempted": total_valid_attempted,
+      "total_invalid_start": total_invalid_start,
+      "total_release_succeeded": total_release_succeeded,
+      "total_lifted": total_lifted,
+      "total_transported": total_transported,
+      "total_placed_near_goal": total_placed,
+      "total_release_stable": total_stable,
+      "failure_breakdown": merged_breakdown,
+      "start_z_offset": _first_non_none(per_object, "start_z_offset"),
+      "lift_height": _first_non_none(per_object, "lift_height"),
+      "place_height": _first_non_none(per_object, "place_height"),
+      "place_hold_goals": _first_non_none(per_object, "place_hold_goals"),
+      "release_steps": _first_non_none(per_object, "release_steps"),
+      "release_xy_tolerance": _first_non_none(per_object, "release_xy_tolerance"),
+      "release_z_tolerance": _first_non_none(per_object, "release_z_tolerance"),
+      "release_speed_tolerance": _first_non_none(per_object, "release_speed_tolerance"),
+      "min_lift_height": _first_non_none(per_object, "min_lift_height"),
+      "min_effective_transport": _first_non_none(per_object, "min_effective_transport"),
+    })
+  else:
+    total_succeeded = sum(int(r.get("succeeded", 0)) for r in per_object)
+    total_stable_succeeded = sum(int(r.get("stable_succeeded", 0)) for r in per_object)
+    summary.update({
+      "overall_success_rate": total_succeeded / max(total_attempted, 1),
+      "stable_success_rate": total_stable_succeeded / max(total_attempted, 1),
+      "total_succeeded": total_succeeded,
+      "total_stable_succeeded": total_stable_succeeded,
+      "pickup_success_hold_steps": _first_non_none(per_object, "pickup_success_hold_steps"),
+    })
+
   output_json.parent.mkdir(parents=True, exist_ok=True)
   output_json.write_text(json.dumps(summary, indent=2))
   return summary
@@ -178,13 +205,24 @@ def main() -> None:
     video_dir=args.video_dir,
     eval_task=args.eval_task,
   )
-  print(
-    f"[aggregate-eval] {summary['split']} "
-    f"{summary['total_succeeded']}/{summary['total_attempted']} = "
-    f"{summary['overall_success_rate']:.1%} "
-    f"stable={summary['total_stable_succeeded']}/{summary['total_attempted']} = "
-    f"{summary['stable_success_rate']:.1%}"
-  )
+  if summary.get("eval_task") == "pick_place_release":
+    print(
+      f"[aggregate-eval] {summary['split']} release "
+      f"{summary['total_release_succeeded']}/{summary['total_valid_attempted']} (valid) = "
+      f"{summary['overall_release_success_rate']:.1%}  "
+      f"[lift {summary['total_lifted']} transport {summary['total_transported']} "
+      f"place {summary['total_placed_near_goal']} stable {summary['total_release_stable']} "
+      f"invalid_start {summary['total_invalid_start']} "
+      f"(attempted {summary['total_attempted']})]"
+    )
+  else:
+    print(
+      f"[aggregate-eval] {summary['split']} "
+      f"{summary['total_succeeded']}/{summary['total_attempted']} = "
+      f"{summary['overall_success_rate']:.1%} "
+      f"stable={summary['total_stable_succeeded']}/{summary['total_attempted']} = "
+      f"{summary['stable_success_rate']:.1%}"
+    )
   print(f"[aggregate-eval] saved {args.output_json}")
 
 

@@ -31,14 +31,27 @@ DEFAULT_BLEND_FILE = REPO_ROOT / "assets" / "blender" / "templates" / "simtool_l
 LIGHTING_PRESET_ENV = "SIMTOOLDIFF_LIGHTING_PRESET"
 DEFAULT_PICKUP_SUCCESS_HOLD_STEPS = 5
 DEFAULT_PICKUP_HORIZON = 250
-DEFAULT_PICK_PLACE_RELEASE_HORIZON = 325
+# Matches Karen's eval_diffusion_policy_pick_place_release.py (DEF_HORIZON_WITH_RELEASE).
+DEFAULT_PICK_PLACE_RELEASE_HORIZON = 350
 DEFAULT_RELEASE_STEPS = 45
 DEFAULT_LIFT_HEIGHT_M = 0.20
 DEFAULT_PLACE_HEIGHT_M = 0.02
 DEFAULT_PLACE_HOLD_GOALS = 10
-DEFAULT_RELEASE_XY_TOLERANCE_M = 0.05
+# Matches Karen's pose-based eval tolerances (DEF_RELEASE_XY_TOL_M et al.).
+DEFAULT_RELEASE_XY_TOLERANCE_M = 0.06
 DEFAULT_RELEASE_Z_TOLERANCE_M = 0.04
 DEFAULT_RELEASE_SPEED_TOLERANCE_MPS = 0.25
+# "Fair" pickup bar for the pose-based release metric: the object cleared the
+# table by this much at some point (below the 0.20 m lift goal, above jitter).
+DEFAULT_MIN_LIFT_HEIGHT_M = 0.10
+# Degenerate spawn: object dropped this far below its start height before the
+# policy ever lifted it. Excluded from the success denominator (matches Karen).
+INVALID_START_FALL_M = 0.15
+# Failure-stage labels for the pose-based release metric (Karen's POSE_FAILURE_STAGES).
+POSE_FAILURE_STAGES = (
+  "invalid_start", "no_lift", "no_transport", "no_place", "unstable",
+  "drop_reattempt",
+)
 DEFAULT_LONG_TABLE_X_HALF_EXTENT_M = 0.60 / 2.0
 DEFAULT_LONG_TABLE_X_INSET_MARGIN_M = 0.06
 DEFAULT_TABLE_Y_HALF_EXTENT_M = 0.4 / 2.0
@@ -113,6 +126,7 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
       "--place-goal-x-margin", str(args.place_goal_x_margin),
       "--place-goal-y-margin", str(args.place_goal_y_margin),
       "--min-effective-transport", str(args.min_effective_transport),
+      "--min-lift-height", str(getattr(args, "min_lift_height", DEFAULT_MIN_LIFT_HEIGHT_M)),
     ]
   if args.render_width is not None:
     cmd += ["--render-width", str(args.render_width)]
@@ -194,14 +208,6 @@ def run_driver(args) -> None:
       per_object.append(result)
 
   total_attempted = sum(r.get("attempted", 0) for r in per_object)
-  total_succeeded = sum(r.get("succeeded", 0) for r in per_object)
-  total_stable_succeeded = sum(r.get("stable_succeeded", 0) for r in per_object)
-  total_pick_place_succeeded = sum(r.get("pick_place_succeeded", 0) for r in per_object)
-  total_release_goal_succeeded = sum(r.get("release_goal_succeeded", 0) for r in per_object)
-  total_release_stable_succeeded = sum(
-    r.get("release_stable_succeeded", 0) for r in per_object)
-  overall = total_succeeded / max(total_attempted, 1)
-  stable_overall = total_stable_succeeded / max(total_attempted, 1)
 
   summary = {
     "checkpoint": str(args.checkpoint),
@@ -226,39 +232,89 @@ def run_driver(args) -> None:
       else _first_non_none(per_object, "render_height")
     ),
     "video_dir": str(args.video_dir) if args.video_dir is not None else None,
-    "overall_success_rate": overall,
-    "stable_success_rate": stable_overall,
     "total_attempted": total_attempted,
-    "total_succeeded": total_succeeded,
-    "total_stable_succeeded": total_stable_succeeded,
-    "total_pick_place_succeeded": total_pick_place_succeeded,
-    "total_release_goal_succeeded": total_release_goal_succeeded,
-    "total_release_stable_succeeded": total_release_stable_succeeded,
-    "pick_place_success_rate": (
-      total_pick_place_succeeded / max(total_attempted, 1)
-      if eval_task == "pick_place_release" else None
-    ),
-    "release_goal_success_rate": (
-      total_release_goal_succeeded / max(total_attempted, 1)
-      if eval_task == "pick_place_release" else None
-    ),
-    "pickup_success_hold_steps": getattr(
-      args, "pickup_success_hold_steps", DEFAULT_PICKUP_SUCCESS_HOLD_STEPS),
     "per_object": per_object,
   }
+
   if eval_task == "pick_place_release":
+    # Pose-based (diffusion-fair) aggregation, matching the per-object worker
+    # schema and Karen's eval. Headline rate is over VALID (non-degenerate)
+    # spawns. This is byte-shape-identical to aggregate_eval_results.py so the
+    # SLURM array->aggregate output matches this sequential driver.
+    total_valid_attempted = sum(r.get("valid_attempted", 0) for r in per_object)
+    total_invalid_start = sum(r.get("invalid_start", 0) for r in per_object)
+    total_release_succeeded = sum(r.get("release_succeeded", 0) for r in per_object)
+    total_lifted = sum(r.get("lifted", 0) for r in per_object)
+    total_transported = sum(r.get("transported", 0) for r in per_object)
+    total_placed = sum(r.get("placed_near_goal", 0) for r in per_object)
+    total_stable = sum(r.get("release_stable", 0) for r in per_object)
+    merged_breakdown: dict = {}
+    for r in per_object:
+      for stage, n in (r.get("failure_breakdown") or {}).items():
+        merged_breakdown[stage] = merged_breakdown.get(stage, 0) + int(n)
+    overall = total_release_succeeded / max(total_valid_attempted, 1)
     summary.update({
+      "overall_release_success_rate": overall,
+      "total_valid_attempted": total_valid_attempted,
+      "total_invalid_start": total_invalid_start,
+      "total_release_succeeded": total_release_succeeded,
+      "total_lifted": total_lifted,
+      "total_transported": total_transported,
+      "total_placed_near_goal": total_placed,
+      "total_release_stable": total_stable,
+      "failure_breakdown": merged_breakdown,
       "start_z_offset": args.start_z_offset,
       "lift_height": args.lift_height,
       "place_height": args.place_height,
       "place_hold_goals": args.place_hold_goals,
       "release_steps": args.release_steps,
-      "release_arm_mode": args.release_arm_mode,
-      "release_hand_blend": args.release_hand_blend,
       "release_xy_tolerance": args.release_xy_tolerance,
       "release_z_tolerance": args.release_z_tolerance,
       "release_speed_tolerance": args.release_speed_tolerance,
+      "min_lift_height": getattr(args, "min_lift_height", DEFAULT_MIN_LIFT_HEIGHT_M),
+      "min_effective_transport": args.min_effective_transport,
     })
+    args.output_json.write_text(json.dumps(summary, indent=2))
+    print(f"\n[eval-driver] renderer={args.renderer} eval_task=pick_place_release", flush=True)
+    print(
+      f"[eval-driver] overall release: {total_release_succeeded}/{total_valid_attempted} "
+      f"(valid) = {overall:.1%}  [attempted {total_attempted}, invalid_start "
+      f"{total_invalid_start}]",
+      flush=True,
+    )
+    print(
+      f"[eval-driver] funnel: lift {total_lifted} transport {total_transported} "
+      f"place {total_placed} stable {total_stable} (of {total_valid_attempted} valid)",
+      flush=True,
+    )
+    for r in per_object:
+      if r.get("error"):
+        print(f"  - {r['object_name']:<22s} ERROR: {r.get('error')}")
+      else:
+        va = r.get("valid_attempted", 0)
+        print(
+          f"  - {r['object_name']:<22s} "
+          f"{r.get('release_succeeded', 0):>3d}/{va:<3d} = "
+          f"{r.get('release_success_rate', 0.0):.1%} "
+          f"[lift {r.get('lifted', 0)} place {r.get('placed_near_goal', 0)} "
+          f"stable {r.get('release_stable', 0)} invalid {r.get('invalid_start', 0)}]"
+        )
+    print(f"[eval-driver] saved {args.output_json}", flush=True)
+    return
+
+  # --- pickup aggregation (unchanged) ---
+  total_succeeded = sum(r.get("succeeded", 0) for r in per_object)
+  total_stable_succeeded = sum(r.get("stable_succeeded", 0) for r in per_object)
+  overall = total_succeeded / max(total_attempted, 1)
+  stable_overall = total_stable_succeeded / max(total_attempted, 1)
+  summary.update({
+    "overall_success_rate": overall,
+    "stable_success_rate": stable_overall,
+    "total_succeeded": total_succeeded,
+    "total_stable_succeeded": total_stable_succeeded,
+    "pickup_success_hold_steps": getattr(
+      args, "pickup_success_hold_steps", DEFAULT_PICKUP_SUCCESS_HOLD_STEPS),
+  })
   args.output_json.write_text(json.dumps(summary, indent=2))
 
   print(f"\n[eval-driver] renderer={args.renderer}", flush=True)
@@ -271,17 +327,6 @@ def run_driver(args) -> None:
     f"{stable_overall:.1%}",
     flush=True,
   )
-  if eval_task == "pick_place_release":
-    print(
-      f"[eval-driver] pick_place: {total_pick_place_succeeded}/{total_attempted} = "
-      f"{total_pick_place_succeeded / max(total_attempted, 1):.1%}",
-      flush=True,
-    )
-    print(
-      f"[eval-driver] release_goal: {total_release_goal_succeeded}/{total_attempted} = "
-      f"{total_release_goal_succeeded / max(total_attempted, 1):.1%}",
-      flush=True,
-    )
   for r in per_object:
     if r.get("success_rate") is None:
       print(f"  - {r['object_name']:<22s} ERROR: {r.get('error')}")
@@ -656,6 +701,65 @@ def run_worker(args) -> None:
   )
 
 
+def _classify_release_pose_based(
+  *,
+  valid_start: bool,
+  lifted: bool,
+  transported: bool,
+  final_object_on_table: bool,
+  final_place_xy_error_m: float,
+  final_place_z_error_m: float,
+  final_object_speed_mps: float,
+  release_xy_tolerance: float,
+  release_z_tolerance: float,
+  release_speed_tolerance: float,
+  reattempted_after_drop: bool,
+  best_post_lift_xy_error_m: float = float("inf"),
+  best_post_lift_speed_mps: float = float("inf"),
+):
+  """Pose-based, diffusion-policy-fair release success.
+
+  Ported from Karen's eval_diffusion_policy_pick_place_release.py. Unlike the
+  collector's `_classify_release_outcome`, this does NOT gate on the env RL goal
+  counter (which only ticks on ~1cm keypoint matches a BC/diffusion policy rarely
+  reproduces). It scores the policy on what it physically achieved: lifted the
+  object, carried it to the place goal, and left it resting there within the same
+  xy / z / speed tolerances the dataset was scored on.
+
+  Returns (release_success, placed_near_goal, at_rest, failure_stage).
+  """
+  placed_near_goal = (
+    final_object_on_table
+    and final_place_xy_error_m <= release_xy_tolerance
+    and final_place_z_error_m <= release_z_tolerance
+  )
+  at_rest = final_object_speed_mps <= release_speed_tolerance
+  best_placed_near_goal = (
+    best_post_lift_xy_error_m <= release_xy_tolerance
+    and final_object_speed_mps <= release_speed_tolerance
+  )
+  effective_placed = placed_near_goal or best_placed_near_goal
+  release_success = (
+    valid_start and lifted and transported and effective_placed
+    and not reattempted_after_drop
+  )
+  if not valid_start:
+    failure_stage = "invalid_start"
+  elif not lifted:
+    failure_stage = "no_lift"
+  elif reattempted_after_drop:
+    failure_stage = "drop_reattempt"
+  elif not transported:
+    failure_stage = "no_transport"
+  elif not effective_placed:
+    failure_stage = "no_place"
+  elif not at_rest and not best_placed_near_goal:
+    failure_stage = "unstable"
+  else:
+    failure_stage = None
+  return release_success, placed_near_goal, at_rest, failure_stage
+
+
 def run_pick_place_release_worker(args) -> None:
   # IsaacGym must be imported before torch.
   from isaacgym import gymapi  # noqa: F401
@@ -832,47 +936,58 @@ def run_pick_place_release_worker(args) -> None:
   preview_counts = {"success": 0, "fail": 0}
   min_preview_frames = 8
 
+  # Pose-based (diffusion-fair) funnel counters, matching Karen's eval.
   attempted = 0
-  succeeded = 0
-  pick_place_succeeded = 0
-  release_goal_succeeded = 0
-  release_stable_succeeded = 0
-  failure_breakdown = {name: 0 for name in ppr.RELEASE_GOAL_STAGE_NAMES}
-  failure_breakdown["drop_reattempt"] = 0
+  valid_attempted = 0
+  invalid_start_count = 0
+  release_succeeded = 0
+  lifted_count = 0
+  transported_count = 0
+  placed_count = 0
+  stable_count = 0
+  failure_breakdown = {name: 0 for name in POSE_FAILURE_STAGES}
   final_metrics = {}
-  open_hand_action = ppr._compute_open_hand_action(env)
+  episode_log = []
 
   try:
     while attempted < args.episodes_per_object:
-      start_pose, goal_x, lateral_offset = ppr._sample_end_to_end_start_and_goal_release(
-        env,
-        rng,
-        nominal_start_pose,
-        args,
-      )
-      goals, release_start_goal_idx, place_goal = ppr._build_pick_place_release_goals(
-        start_pose,
-        goal_x=goal_x,
-        lift_height=args.lift_height,
-        place_height=args.place_height,
-        place_hold_goals=args.place_hold_goals,
-        release_hold_goals=args.release_steps,
-      )
-      if not ppr._place_goal_in_safe_zone(
-        env,
-        place_goal,
-        table_x_half_extent=args.table_x_half_extent,
-        table_x_inset_margin=args.place_goal_x_margin,
-        table_y_half_extent=args.table_y_half_extent,
-        table_y_inset_margin=args.place_goal_y_margin,
-      ):
-        print(
-          f"[eval-worker-ppr] skipped unsafe place goal "
-          f"start={np.array(start_pose).round(4).tolist()} "
-          f"goal={np.array(place_goal).round(4).tolist()}",
-          flush=True,
+      # Footprint-safe start/goal with bounded retry, matching Karen's
+      # sample_episode_goals: retry rejected draws (ValueError) and unsafe place
+      # goals up to 64 times, then raise instead of crashing or looping forever.
+      start_pose = goals = place_goal = None
+      release_start_goal_idx = 0
+      goal_x = lateral_offset = 0.0
+      for _sample_try in range(64):
+        try:
+          start_pose, goal_x, lateral_offset = ppr._sample_end_to_end_start_and_goal_release(
+            env,
+            rng,
+            nominal_start_pose,
+            args,
+          )
+        except ValueError:
+          continue
+        goals, release_start_goal_idx, place_goal = ppr._build_pick_place_release_goals(
+          start_pose,
+          goal_x=goal_x,
+          lift_height=args.lift_height,
+          place_height=args.place_height,
+          place_hold_goals=args.place_hold_goals,
+          release_hold_goals=args.release_steps,
         )
-        continue
+        if ppr._place_goal_in_safe_zone(
+          env,
+          place_goal,
+          table_x_half_extent=args.table_x_half_extent,
+          table_x_inset_margin=args.place_goal_x_margin,
+          table_y_half_extent=args.table_y_half_extent,
+          table_y_inset_margin=args.place_goal_y_margin,
+        ):
+          break
+      else:
+        raise RuntimeError(
+          "Could not sample a footprint-safe release goal in 64 tries"
+        )
 
       env_ids = torch.tensor([0], device=env.device, dtype=torch.long)
       env.trajectory_states = torch.tensor(
@@ -888,10 +1003,18 @@ def run_pick_place_release_worker(args) -> None:
       )
       env.cfg["env"]["tableObjectZOffset"] = float(start_pose[2] - ppr.TABLE_Z)
       env.reset_idx(env_ids, tensor_reset=True)
+      if hasattr(policy, "reset"):
+        policy.reset()
 
       zero_action = torch.zeros((env.num_envs, ppr.N_ACT), device=device)
       obs_dict, _, _, _ = env.step(zero_action)
       obs = obs_dict["obs"]
+
+      # Start-of-rollout object xy, used to measure horizontal transport at the
+      # end. A degenerate spawn is detected in-loop as an early fall, not here.
+      start_object_xy = env.object_pose[0, 0:2].detach().cpu().numpy().copy()
+      # Pre-compute the place goal so it is available inside the step loop.
+      place_goal_np = np.asarray(place_goal, dtype=np.float32)
 
       init_native, init_normalized = render_step()
       image_history = deque(
@@ -917,6 +1040,11 @@ def run_pick_place_release_worker(args) -> None:
       reattempted_after_drop = False
       max_object_height_above_init_m = 0.0
       steps_executed = 0
+      # Pose-based tracking (Karen's eval): degenerate-spawn detection and best
+      # xy proximity to the goal once the object has cleared the lift threshold.
+      invalid_start = False
+      best_post_lift_xy_m = float("inf")
+      best_post_lift_speed_at_best_xy = float("inf")
 
       step = 0
       episode_done = False
@@ -937,14 +1065,10 @@ def run_pick_place_release_worker(args) -> None:
           if in_release_phase and release_start_step is None:
             release_start_step = step
 
+          # Match Karen's eval: the policy drives the full action during the
+          # release phase (no scripted hand-open). release_start_step /
+          # in_release_phase are tracked for stage logging only.
           action_t = action_seq[:, k]
-          if in_release_phase:
-            action_t = ppr._build_release_action(
-              policy_action_t=action_t,
-              open_hand_action=open_hand_action,
-              arm_mode=args.release_arm_mode,
-              hand_blend=args.release_hand_blend,
-            )
 
           obs_dict, _, done, _ = env.step(action_t)
           obs = obs_dict["obs"]
@@ -960,6 +1084,26 @@ def run_pick_place_release_worker(args) -> None:
             max_object_height_above_init_m,
             object_height_above_init_m,
           )
+          # Track best xy proximity to goal after the object has been lifted, so
+          # we can credit "placed near goal then rolled off" and "hand over goal
+          # before releasing" (Karen's pose-based metric).
+          if max_object_height_above_init_m >= args.min_lift_height:
+            cur_xy_err = float(np.linalg.norm(
+              env.object_pose[0, 0:2].detach().cpu().numpy() - place_goal_np[0:2]
+            ))
+            cur_speed = float(np.linalg.norm(env.object_linvel[0].detach().cpu().numpy()))
+            if cur_xy_err < best_post_lift_xy_m:
+              best_post_lift_xy_m = cur_xy_err
+              best_post_lift_speed_at_best_xy = cur_speed
+          # Degenerate spawn: object fell off the table before it was ever
+          # lifted. Guarding on "not yet lifted" keeps genuine post-lift drops
+          # (a real policy failure) from being excluded from the denominator.
+          if (
+            not invalid_start
+            and max_object_height_above_init_m < args.min_lift_height
+            and object_height_above_init_m < -INVALID_START_FALL_M
+          ):
+            invalid_start = True
           dropped_now = ppr._drop_detected_after_pickup_attempt(
             object_height_above_init_m=object_height_above_init_m,
             max_object_height_above_init_m=max_object_height_above_init_m,
@@ -1001,13 +1145,15 @@ def run_pick_place_release_worker(args) -> None:
       attempted += 1
       final_object_pose_np = env.object_pose[0, 0:7].detach().cpu().numpy()
       final_object_linvel_np = env.object_linvel[0].detach().cpu().numpy()
-      place_goal_np = np.asarray(place_goal, dtype=np.float32)
       final_place_xy_error_m = float(np.linalg.norm(final_object_pose_np[0:2] - place_goal_np[0:2]))
       final_place_z_error_m = float(abs(final_object_pose_np[2] - place_goal_np[2]))
       final_place_pos_error_m = float(np.linalg.norm(final_object_pose_np[0:3] - place_goal_np[0:3]))
       final_object_speed_mps = float(np.linalg.norm(final_object_linvel_np))
+      final_transport_m = float(np.linalg.norm(final_object_pose_np[0:2] - start_object_xy))
       entered_release_phase = release_start_step is not None
       release_steps_executed = sum(1 for value in release_phase_per_step if value)
+      lifted = max_object_height_above_init_m >= args.min_lift_height
+      transported = final_transport_m >= args.min_effective_transport
       final_object_on_table = ppr._final_object_on_table(
         env,
         final_object_pose_np,
@@ -1017,16 +1163,14 @@ def run_pick_place_release_worker(args) -> None:
         table_y_inset_margin=args.table_y_inset_margin,
       )
       (
-        pick_place_success,
-        release_goal_success,
-        release_stable,
         release_success,
+        placed_near_goal,
+        at_rest,
         failure_stage,
-      ) = ppr._classify_release_outcome(
-        max_successes_seen=max_successes_seen,
-        release_start_goal_idx=release_start_goal_idx,
-        total_goals=len(goals),
-        entered_release_phase=entered_release_phase,
+      ) = _classify_release_pose_based(
+        valid_start=not invalid_start,
+        lifted=lifted,
+        transported=transported,
         final_object_on_table=final_object_on_table,
         final_place_xy_error_m=final_place_xy_error_m,
         final_place_z_error_m=final_place_z_error_m,
@@ -1035,30 +1179,57 @@ def run_pick_place_release_worker(args) -> None:
         release_z_tolerance=args.release_z_tolerance,
         release_speed_tolerance=args.release_speed_tolerance,
         reattempted_after_drop=reattempted_after_drop,
+        best_post_lift_xy_error_m=best_post_lift_xy_m,
+        best_post_lift_speed_mps=best_post_lift_speed_at_best_xy,
       )
+      stable = bool(placed_near_goal and at_rest)
 
-      if pick_place_success:
-        pick_place_succeeded += 1
-      if release_goal_success:
-        release_goal_succeeded += 1
-      if release_stable:
-        release_stable_succeeded += 1
-      if release_success:
-        succeeded += 1
-      _record_release_failure(failure_breakdown, release_success, failure_stage)
+      # Funnel aggregation over valid (non-degenerate) spawns only (matches Karen).
+      if invalid_start:
+        invalid_start_count += 1
+        failure_breakdown["invalid_start"] += 1
+      else:
+        valid_attempted += 1
+        if lifted:
+          lifted_count += 1
+        if transported:
+          transported_count += 1
+        if placed_near_goal:
+          placed_count += 1
+        if stable:
+          stable_count += 1
+        if release_success:
+          release_succeeded += 1
+        elif failure_stage is not None:
+          failure_breakdown[failure_stage] = failure_breakdown.get(failure_stage, 0) + 1
 
       final_metrics = {
         "steps": steps_executed,
         "release_start_step": release_start_step,
         "release_steps_executed": release_steps_executed,
+        "release_success": bool(release_success),
+        "valid_start": bool(not invalid_start),
+        "lifted": bool(lifted),
+        "transported": bool(transported),
+        "placed_near_goal": bool(placed_near_goal),
+        "stable": stable,
         "max_successes_seen": max_successes_seen,
         "final_successes": final_successes,
-        "failure_stage": failure_stage,
+        "failure_stage": failure_stage if not release_success else None,
         "final_object_on_table": final_object_on_table,
         "final_place_pos_error_m": final_place_pos_error_m,
         "final_place_xy_error_m": final_place_xy_error_m,
         "final_place_z_error_m": final_place_z_error_m,
         "final_object_speed_mps": final_object_speed_mps,
+        "final_transport_m": round(final_transport_m, 4),
+        "max_object_height_above_init_m": round(max_object_height_above_init_m, 4),
+        "best_post_lift_xy_error_m": (
+          round(best_post_lift_xy_m, 4) if best_post_lift_xy_m != float("inf") else None
+        ),
+        "best_post_lift_speed_mps": (
+          round(best_post_lift_speed_at_best_xy, 4)
+          if best_post_lift_speed_at_best_xy != float("inf") else None
+        ),
         "dropped_after_lift": dropped_after_lift,
         "drop_step": drop_step,
         "drop_successes_before": drop_successes_before,
@@ -1066,6 +1237,7 @@ def run_pick_place_release_worker(args) -> None:
         "goal_x": goal_x,
         "lateral_offset": lateral_offset,
       }
+      episode_log.append({"ep": attempted - 1, **final_metrics})
 
       if save_previews:
         outcome = "success" if release_success else "fail"
@@ -1082,11 +1254,13 @@ def run_pick_place_release_worker(args) -> None:
           )
           preview_counts[outcome] += 1
 
+      sr = release_succeeded / max(valid_attempted, 1)
       print(
-        f"[eval-worker-ppr] {args.object_name}: release={succeeded}/{attempted} "
-        f"({succeeded / max(attempted, 1):.1%}) "
-        f"pick_place={pick_place_succeeded}/{attempted} "
-        f"stable={release_stable_succeeded}/{attempted}",
+        f"[eval-worker-ppr] {args.object_name}: release="
+        f"{release_succeeded}/{valid_attempted} ({sr:.1%}) "
+        f"[lift {lifted_count} transport {transported_count} "
+        f"place {placed_count} stable {stable_count} "
+        f"invalid_start {invalid_start_count}]",
         flush=True,
       )
   finally:
@@ -1094,8 +1268,9 @@ def run_pick_place_release_worker(args) -> None:
     if _blender_tmpdir:
       shutil.rmtree(_blender_tmpdir, ignore_errors=True)
 
-  success_rate = succeeded / max(attempted, 1)
-  stable_success_rate = release_stable_succeeded / max(attempted, 1)
+  # Headline rate is over valid (non-degenerate) spawns only, matching Karen's
+  # pose-based eval.
+  release_success_rate = release_succeeded / max(valid_attempted, 1)
   result = {
     "object_id": args.object_id,
     "category_id": args.category_id,
@@ -1112,37 +1287,37 @@ def run_pick_place_release_worker(args) -> None:
     "render_width": render_w,
     "render_height": render_h,
     "attempted": attempted,
-    "succeeded": succeeded,
-    "success_rate": success_rate,
-    "stable_succeeded": release_stable_succeeded,
-    "stable_success_rate": stable_success_rate,
-    "pick_place_succeeded": pick_place_succeeded,
-    "pick_place_success_rate": pick_place_succeeded / max(attempted, 1),
-    "release_goal_succeeded": release_goal_succeeded,
-    "release_goal_success_rate": release_goal_succeeded / max(attempted, 1),
-    "release_stable_succeeded": release_stable_succeeded,
-    "release_stable_success_rate": stable_success_rate,
+    "valid_attempted": valid_attempted,
+    "invalid_start": invalid_start_count,
+    "release_succeeded": release_succeeded,
+    "lifted": lifted_count,
+    "transported": transported_count,
+    "placed_near_goal": placed_count,
+    "release_stable": stable_count,
+    "release_success_rate": release_success_rate,
     "failure_breakdown": failure_breakdown,
+    "horizon": args.horizon,
     "release_steps": args.release_steps,
-    "release_arm_mode": args.release_arm_mode,
-    "release_hand_blend": args.release_hand_blend,
     "release_xy_tolerance": args.release_xy_tolerance,
     "release_z_tolerance": args.release_z_tolerance,
     "release_speed_tolerance": args.release_speed_tolerance,
+    "min_lift_height": args.min_lift_height,
+    "min_effective_transport": args.min_effective_transport,
     "start_z_offset": args.start_z_offset,
     "lift_height": args.lift_height,
     "place_height": args.place_height,
     "place_hold_goals": args.place_hold_goals,
     "last_episode": final_metrics,
+    "episodes": episode_log,
     "preview_dir": str(args.video_dir) if save_previews else None,
     "previews_saved": preview_counts if save_previews else {"success": 0, "fail": 0},
   }
   Path(args.result_json).write_text(json.dumps(result, indent=2))
   print(
     f"[eval-worker-ppr] DONE {args.object_name}: "
-    f"release={succeeded}/{attempted} = {success_rate:.1%} "
-    f"pick_place={pick_place_succeeded}/{attempted} = "
-    f"{pick_place_succeeded / max(attempted, 1):.1%}",
+    f"release={release_succeeded}/{valid_attempted} = {release_success_rate:.1%} "
+    f"[lift {lifted_count} transport {transported_count} place {placed_count} "
+    f"stable {stable_count} invalid_start {invalid_start_count}]",
     flush=True,
   )
 
@@ -1210,6 +1385,8 @@ def parse_args() -> argparse.Namespace:
   p.add_argument("--place-goal-x-margin", type=float, default=DEFAULT_PLACE_GOAL_X_MARGIN_M)
   p.add_argument("--place-goal-y-margin", type=float, default=DEFAULT_PLACE_GOAL_Y_MARGIN_M)
   p.add_argument("--min-effective-transport", type=float, default=DEFAULT_MIN_EFFECTIVE_TRANSPORT_M)
+  p.add_argument("--min-lift-height", type=float, default=DEFAULT_MIN_LIFT_HEIGHT_M,
+                 help="Pose-based 'fair' pickup bar: object cleared the table by this much at some point.")
 
   # Worker-only args (passed by driver)
   p.add_argument("--object-category", default=None)
