@@ -332,7 +332,7 @@ python blender_eval/eval_blender.py \
   --category-id 2 \
   --episodes-per-object 2 \
   --num-envs 1 \
-  --horizon 325 \
+  --horizon 350 \
   --xy-range 0.10 \
   --start-z-offset 0.0 \
   --seed 0 \
@@ -342,8 +342,7 @@ python blender_eval/eval_blender.py \
   --cycles-device gpu \
   --blender "$BLENDER" \
   --release-steps 45 \
-  --release-arm-mode hold \
-  --release-hand-blend 1.0 \
+  --min-lift-height 0.10 \
   --result-json "$OUT_ROOT/ppr_smoke/claw_hammer.json" \
   --video-dir "$OUT_ROOT/ppr_smoke/videos/claw_hammer" \
   --max-success-previews 1 \
@@ -354,28 +353,33 @@ Expected terminal lines:
 
 ```text
 [eval-worker-ppr] policy: To=2 state_dim=29 image=(3, 192, 256) renderer=blender
-[eval-worker-ppr] DONE claw_hammer: release=1/2 = 50.0% pick_place=2/2 = 100.0%
+[eval-worker-ppr] DONE claw_hammer: release=1/2 = 50.0% [lift 2 transport 2 place 1 stable 1 invalid_start 0]
 ```
 
-Important JSON fields:
+Important JSON fields (pose-based / diffusion-fair schema, matching Karen's
+`scripts/eval_diffusion_policy_pick_place_release.py`):
 
 ```json
 {
   "eval_task": "pick_place_release",
   "attempted": 2,
-  "succeeded": 1,
-  "success_rate": 0.5,
-  "pick_place_succeeded": 2,
-  "pick_place_success_rate": 1.0,
-  "release_goal_succeeded": 1,
-  "release_goal_success_rate": 0.5,
-  "release_stable_succeeded": 1,
-  "release_stable_success_rate": 0.5,
-  "failure_breakdown": {}
+  "valid_attempted": 2,
+  "invalid_start": 0,
+  "release_succeeded": 1,
+  "release_success_rate": 0.5,
+  "lifted": 2,
+  "transported": 2,
+  "placed_near_goal": 1,
+  "release_stable": 1,
+  "failure_breakdown": {"no_place": 1}
 }
 ```
 
-For PPR, `succeeded` / `success_rate` means final release success, not pickup max-height success.
+The headline metric is `release_success_rate = release_succeeded / valid_attempted`
+(degenerate spawns flagged `invalid_start` are excluded from the denominator).
+Release success is scored by **object pose**, not the env RL goal counter, and the
+policy drives the release directly (no scripted hand-open — `--release-arm-mode` /
+`--release-hand-blend` are unused).
 
 ## Full Pick-Place-Release Eval: Driver Mode
 
@@ -391,7 +395,7 @@ python blender_eval/eval_blender.py \
   --split train \
   --episodes-per-object 32 \
   --num-envs 1 \
-  --horizon 325 \
+  --horizon 350 \
   --xy-range 0.10 \
   --start-z-offset 0.0 \
   --seed 0 \
@@ -401,8 +405,7 @@ python blender_eval/eval_blender.py \
   --cycles-device gpu \
   --blender "$BLENDER" \
   --release-steps 45 \
-  --release-arm-mode hold \
-  --release-hand-blend 1.0 \
+  --min-lift-height 0.10 \
   --output-json "$OUT_ROOT/ppr_driver/photoreal_ppr_train.json" \
   --max-success-previews 2 \
   --max-failure-previews 2
@@ -418,7 +421,7 @@ python blender_eval/eval_blender.py \
   --split ood \
   --episodes-per-object 32 \
   --num-envs 1 \
-  --horizon 325 \
+  --horizon 350 \
   --xy-range 0.10 \
   --start-z-offset 0.0 \
   --seed 0 \
@@ -428,8 +431,7 @@ python blender_eval/eval_blender.py \
   --cycles-device gpu \
   --blender "$BLENDER" \
   --release-steps 45 \
-  --release-arm-mode hold \
-  --release-hand-blend 1.0 \
+  --min-lift-height 0.10 \
   --output-json "$OUT_ROOT/ppr_driver/photoreal_ppr_ood.json" \
   --max-success-previews 2 \
   --max-failure-previews 2
@@ -440,14 +442,16 @@ Expected summary JSON fields:
 ```json
 {
   "eval_task": "pick_place_release",
-  "overall_success_rate": 0.5,
-  "pick_place_success_rate": 0.75,
-  "release_goal_success_rate": 0.5,
+  "overall_release_success_rate": 0.5,
   "total_attempted": 288,
-  "total_succeeded": 144,
-  "total_pick_place_succeeded": 216,
-  "total_release_goal_succeeded": 144,
-  "total_release_stable_succeeded": 140
+  "total_valid_attempted": 280,
+  "total_invalid_start": 8,
+  "total_release_succeeded": 140,
+  "total_lifted": 230,
+  "total_transported": 200,
+  "total_placed_near_goal": 150,
+  "total_release_stable": 145,
+  "failure_breakdown": {"no_lift": 50, "no_transport": 30, "no_place": 50, "unstable": 10, "invalid_start": 8}
 }
 ```
 

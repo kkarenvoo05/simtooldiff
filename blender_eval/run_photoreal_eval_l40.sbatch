@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
-#SBATCH --gres=gpu:l40:1
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --job-name=photoreal_eval_l40
 #SBATCH --output=logs/photoreal_eval_l40-%j.out
 #SBATCH --error=logs/photoreal_eval_l40-%j.err
@@ -159,7 +159,6 @@ COMMON_ARGS=(
   --episodes-per-object "$EPISODES_PER_OBJECT"
   --num-envs "$NUM_ENVS"
   --xy-range "$XY_RANGE"
-  --seed "$SEED"
   --device "$DEVICE"
   --max-success-previews "$MAX_SUCCESS_PREVIEWS"
   --max-failure-previews "$MAX_FAILURE_PREVIEWS"
@@ -179,6 +178,7 @@ case "$MODE" in
     "$PY" blender_eval/eval_blender.py \
       --worker \
       "${COMMON_ARGS[@]}" \
+      --seed "$SEED" \
       --object-category "$OBJ_CATEGORY" \
       --object-name "$OBJ_NAME" \
       --task-name "$TASK_NAME" \
@@ -212,14 +212,16 @@ print(spec.object_id, spec.category_id, spec.object_category, spec.object_name, 
 PY
     )"
     read -r OBJECT_ID CATEGORY_ID OBJ_CATEGORY OBJ_NAME TASK_NAME <<< "$SPEC_LINE"
+    OBJECT_SEED=$((SEED + OBJECT_ID))
     RUN_DIR="$OUT_ROOT/array_${SPLIT}_${ARRAY_RUN_ID}"
     RESULT_DIR="$RUN_DIR/object_results"
     VIDEO_ROOT="$RUN_DIR/photoreal_${SPLIT}_videos"
     mkdir -p "$RESULT_DIR" "$VIDEO_ROOT/$OBJ_NAME"
-    echo "Running array object ${SLURM_ARRAY_TASK_ID}: $OBJ_CATEGORY/$OBJ_NAME task=$TASK_NAME"
+    echo "Running array object ${SLURM_ARRAY_TASK_ID}: $OBJ_CATEGORY/$OBJ_NAME task=$TASK_NAME seed=$OBJECT_SEED"
     "$PY" blender_eval/eval_blender.py \
       --worker \
       "${COMMON_ARGS[@]}" \
+      --seed "$OBJECT_SEED" \
       --object-category "$OBJ_CATEGORY" \
       --object-name "$OBJ_NAME" \
       --task-name "$TASK_NAME" \
@@ -261,6 +263,7 @@ PY
     echo "Running split photoreal driver: split=$SPLIT episodes_per_object=$EPISODES_PER_OBJECT"
     "$PY" blender_eval/eval_blender.py \
       "${COMMON_ARGS[@]}" \
+      --seed "$SEED" \
       --split "$SPLIT" \
       --output-json "$RUN_DIR/photoreal_${SPLIT}.json"
     ;;

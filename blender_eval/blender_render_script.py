@@ -1459,11 +1459,13 @@ def _set_color_management(scene):
   scene.view_settings.gamma = 1.0
 
 
-def _add_default_static_scene():
+def _add_default_static_scene(scene_variant="pickup"):
   """Create the fallback scripted static scene used when no .blend is supplied."""
-  # IsaacGym scene furniture from assets/urdf/table_narrow_nail.urdf.
-  # The table actor is centered at (0, 0, TABLE_Z); the URDF box is centered
-  # on that actor with size 0.475 x 0.4 x 0.3, plus a small gray nail.
+  # IsaacGym scene furniture. Pickup uses assets/urdf/table_narrow_nail.urdf:
+  # 0.475 x 0.4 x 0.3, plus a small gray nail. PPR uses
+  # assets/urdf/table_pick_place_release.urdf: 0.60 x 0.4 x 0.3, no nail.
+  is_ppr = scene_variant == "ppr"
+  table_dimensions = (0.60, 0.4, 0.3) if is_ppr else (0.475, 0.4, 0.3)
   table_top_mat = _make_wood_material(
     "table_light_oak_top",
     roughness=0.48,
@@ -1480,7 +1482,6 @@ def _add_default_static_scene():
     normal_strength=0.18,
     texture_scale=(1.2, 3.8, 1.0),
   )
-  nail_mat = _make_marble_material("table_nail_marble")
   floor_mat = _make_concrete_material(
     "lab_floor_matte", base=(0.49, 0.50, 0.47, 1.0), roughness=0.82
   )
@@ -1497,20 +1498,22 @@ def _add_default_static_scene():
   table = _add_cube(
     "table",
     location=(0.0, 0.0, 0.38),
-    dimensions=(0.475, 0.4, 0.3),
+    dimensions=table_dimensions,
     mat=None,
     bevel=0.010,
     segments=4,
   )
   _assign_table_box_materials(table, table_top_mat, table_side_mat)
-  _add_cube(
-    "table_nail",
-    location=(-0.16, 0.06, 0.38 + 0.175),
-    dimensions=(0.03, 0.03, 0.06),
-    mat=nail_mat,
-    bevel=0.002,
-    segments=2,
-  )
+  if not is_ppr:
+    nail_mat = _make_marble_material("table_nail_marble")
+    _add_cube(
+      "table_nail",
+      location=(-0.16, 0.06, 0.38 + 0.175),
+      dimensions=(0.03, 0.03, 0.06),
+      mat=nail_mat,
+      bevel=0.002,
+      segments=2,
+    )
 
   # A neutral lab scene replaces the old checkerboard/gradient placeholder.
   if not bpy.data.objects.get("floor"):
@@ -1552,24 +1555,47 @@ def _max_abs_delta(a, b):
   return max(abs(float(x) - float(y)) for x, y in zip(a, b))
 
 
-def _validate_template_scene(blend_file):
+def _validate_template_scene(blend_file, scene_variant="pickup"):
   """Validate the static-scene contract for an externally authored template."""
+  is_ppr = scene_variant == "ppr"
   required = {
     "table": {
       "location": (0.0, 0.0, 0.38),
-      "dimensions": (0.475, 0.4, 0.3),
-    },
-    "table_nail": {
-      "location": (-0.16, 0.06, 0.555),
-      "dimensions": (0.03, 0.03, 0.06),
+      "dimensions": (0.60, 0.4, 0.3) if is_ppr else (0.475, 0.4, 0.3),
     },
     "floor": {},
   }
+  if not is_ppr:
+    required["table_nail"] = {
+      "location": (-0.16, 0.06, 0.555),
+      "dimensions": (0.03, 0.03, 0.06),
+    }
   missing = [name for name in required if bpy.data.objects.get(name) is None]
   if missing:
     raise RuntimeError(
       f"Blend template {blend_file} is missing required static objects: {missing}. "
-      "The template must include at least table, table_nail, and floor."
+      f"The {scene_variant} template must include the required static objects."
+    )
+  if is_ppr:
+    table = bpy.data.objects["table"]
+    expected_table = required["table"]
+    table.location = expected_table["location"]
+    table.dimensions = expected_table["dimensions"]
+    bpy.context.view_layer.update()
+    print(
+      f"WARNING: adjusted PPR blend template table to "
+      f"location={expected_table['location']} dimensions={expected_table['dimensions']}; "
+      "PPR IsaacGym uses the long nail-free table.",
+      file=sys.stderr,
+      flush=True,
+    )
+  if is_ppr and bpy.data.objects.get("table_nail") is not None:
+    bpy.data.objects.remove(bpy.data.objects["table_nail"], do_unlink=True)
+    print(
+      f"WARNING: removed table_nail from PPR blend template {blend_file}; "
+      "PPR IsaacGym uses a nail-free long table.",
+      file=sys.stderr,
+      flush=True,
     )
 
   for name, expected in required.items():
@@ -1635,6 +1661,8 @@ def parse_args():
                  help="Cycles render samples (lower = faster, noisier)")
   p.add_argument("--cycles-device", choices=("auto", "gpu", "cpu"), default="auto",
                  help="Cycles compute device. Use cpu when policy+IsaacGym need GPU VRAM.")
+  p.add_argument("--scene-variant", choices=("pickup", "ppr"), default="pickup",
+                 help="Static table scene to match the evaluated IsaacGym task.")
   p.add_argument("--blend-file", type=str, default=None,
                  help="Optional .blend scene template to load (lighting, materials)")
   p.add_argument("--response-fifo", type=str, required=True,
@@ -1731,9 +1759,9 @@ def setup_scene(args):
   _set_color_management(scene)
 
   if using_template:
-    _validate_template_scene(args.blend_file)
+    _validate_template_scene(args.blend_file, args.scene_variant)
   else:
-    _add_default_static_scene()
+    _add_default_static_scene(args.scene_variant)
 
   return scene
 

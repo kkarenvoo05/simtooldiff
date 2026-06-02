@@ -288,15 +288,23 @@ Pickup JSONs report:
 Use `success_rate` as the original pickup success metric. Treat
 `stable_success_rate` as a stricter diagnostic.
 
-PPR JSONs report final release success as the headline metric:
+PPR JSONs use a pose-based (diffusion-fair) release metric, matching Karen's
+`scripts/eval_diffusion_policy_pick_place_release.py`. Release success is scored
+on object pose (lifted, transported, left resting near the place goal within
+xy/z/speed tolerances), NOT the env RL goal counter, and the policy drives the
+release directly (no scripted hand-open). The headline rate is over VALID
+(non-degenerate) spawns:
 
 - `attempted`
-- `succeeded`
-- `success_rate`
-- `pick_place_succeeded`
-- `release_goal_succeeded`
-- `release_stable_succeeded`
-- `failure_breakdown`
+- `valid_attempted` (spawns where the object did not fall off before the policy engaged)
+- `invalid_start`
+- `release_succeeded`
+- `release_success_rate` = `release_succeeded / valid_attempted`
+- `lifted` / `transported` / `placed_near_goal` / `release_stable` (the funnel)
+- `failure_breakdown` over `{invalid_start, no_lift, no_transport, no_place, unstable, drop_reattempt}`
+
+The full-split aggregate (driver and SLURM array→aggregate alike) reports the
+same totals prefixed with `total_` plus `overall_release_success_rate`.
 
 ## Common Issues
 

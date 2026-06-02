@@ -54,6 +54,7 @@ class BlenderRenderer:
     engine: str = "cycles",
     samples: int = 64,
     cycles_device: str = "auto",
+    scene_variant: str = "pickup",
     blend_file: Optional[str] = None,
     blender_executable: str = "blender",
   ):
@@ -77,6 +78,7 @@ class BlenderRenderer:
       "--height", str(height),
       "--samples", str(samples),
       "--cycles-device", cycles_device,
+      "--scene-variant", scene_variant,
       "--response-fifo", self._fifo_path,
     ]
     if blend_file:

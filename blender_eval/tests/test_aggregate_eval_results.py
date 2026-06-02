@@ -78,6 +78,9 @@ def test_aggregate_pick_place_release_totals(tmp_path, monkeypatch):
   spec = ObjectSpec(4, 2, "hammer", "claw_hammer", "swing_down")
   result_dir = tmp_path / "object_results"
   result_dir.mkdir()
+  # Pose-based (diffusion-fair) per-object worker schema: 4 attempted, 1 a
+  # degenerate spawn (invalid_start) -> 3 valid; 2 release successes over the
+  # 3 valid spawns; funnel + failure breakdown carried through.
   (result_dir / "claw_hammer.json").write_text(json.dumps({
     "object_id": spec.object_id,
     "category_id": spec.category_id,
@@ -87,11 +90,17 @@ def test_aggregate_pick_place_release_totals(tmp_path, monkeypatch):
     "eval_task": "pick_place_release",
     "renderer": "blender",
     "attempted": 4,
-    "succeeded": 2,
-    "stable_succeeded": 3,
-    "pick_place_succeeded": 3,
-    "release_goal_succeeded": 2,
-    "release_stable_succeeded": 3,
+    "valid_attempted": 3,
+    "invalid_start": 1,
+    "release_succeeded": 2,
+    "lifted": 3,
+    "transported": 3,
+    "placed_near_goal": 2,
+    "release_stable": 2,
+    "release_success_rate": 2 / 3,
+    "failure_breakdown": {"invalid_start": 1, "no_place": 1},
+    "release_xy_tolerance": 0.06,
+    "min_lift_height": 0.10,
   }))
   monkeypatch.setattr(
     "blender_eval.aggregate_eval_results._split",
@@ -107,9 +116,15 @@ def test_aggregate_pick_place_release_totals(tmp_path, monkeypatch):
 
   assert summary["eval_task"] == "pick_place_release"
   assert summary["total_attempted"] == 4
-  assert summary["total_succeeded"] == 2
-  assert summary["total_pick_place_succeeded"] == 3
-  assert summary["total_release_goal_succeeded"] == 2
-  assert summary["total_release_stable_succeeded"] == 3
-  assert summary["pick_place_success_rate"] == 0.75
-  assert summary["release_goal_success_rate"] == 0.5
+  assert summary["total_valid_attempted"] == 3
+  assert summary["total_invalid_start"] == 1
+  assert summary["total_release_succeeded"] == 2
+  assert summary["total_lifted"] == 3
+  assert summary["total_transported"] == 3
+  assert summary["total_placed_near_goal"] == 2
+  assert summary["total_release_stable"] == 2
+  assert summary["overall_release_success_rate"] == 2 / 3
+  assert summary["failure_breakdown"] == {"invalid_start": 1, "no_place": 1}
+  # Headline is over valid spawns, not all attempts.
+  assert "total_succeeded" not in summary
+  assert summary["release_xy_tolerance"] == 0.06
