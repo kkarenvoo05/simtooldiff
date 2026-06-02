@@ -503,6 +503,7 @@ def run_worker(args) -> None:
       engine=args.engine,
       samples=args.samples,
       cycles_device=args.cycles_device,
+      scene_variant="pickup",
       blend_file=str(args.blend_file) if args.blend_file is not None else None,
       blender_executable=args.blender,
     )
@@ -839,6 +840,12 @@ def run_pick_place_release_worker(args) -> None:
     seed=args.seed,
     object_name=args.object_name,
   )
+  table_urdf = env.cfg.get("env", {}).get("asset", {}).get("table")
+  if table_urdf != ppr.LONG_TABLE_URDF:
+    raise RuntimeError(
+      f"PPR Blender eval must use the long nail-free collision table "
+      f"{ppr.LONG_TABLE_URDF}, got {table_urdf!r}"
+    )
   env.gym.refresh_actor_root_state_tensor(env.sim)
   if ppr.CHECKPOINT_PATH.exists():
     checkpoint = torch.load(ppr.CHECKPOINT_PATH, map_location=device)
@@ -902,6 +909,7 @@ def run_pick_place_release_worker(args) -> None:
       engine=args.engine,
       samples=args.samples,
       cycles_device=args.cycles_device,
+      scene_variant="ppr",
       blend_file=str(args.blend_file) if args.blend_file is not None else None,
       blender_executable=args.blender,
     )

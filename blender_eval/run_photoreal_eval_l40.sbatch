@@ -5,7 +5,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
-#SBATCH --gres=gpu:l40:1
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --job-name=photoreal_eval_l40
 #SBATCH --output=logs/photoreal_eval_l40-%j.out
 #SBATCH --error=logs/photoreal_eval_l40-%j.err

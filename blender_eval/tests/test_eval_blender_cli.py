@@ -263,7 +263,7 @@ def test_run_one_passes_pick_place_release_worker_args(tmp_path, monkeypatch):
     blender="blender",
     num_envs=1,
     episodes_per_object=1,
-    horizon=325,
+    horizon=350,
     xy_range=0.1,
     start_z_offset=0.0,
     seed=10,
@@ -282,7 +282,7 @@ def test_run_one_passes_pick_place_release_worker_args(tmp_path, monkeypatch):
     release_steps=45,
     release_arm_mode="hold",
     release_hand_blend=1.0,
-    release_xy_tolerance=0.05,
+    release_xy_tolerance=0.06,
     release_z_tolerance=0.04,
     release_speed_tolerance=0.25,
     table_x_half_extent=0.3,
@@ -299,7 +299,7 @@ def test_run_one_passes_pick_place_release_worker_args(tmp_path, monkeypatch):
   cmd, check, _ = calls[0]
   assert check is True
   assert cmd[cmd.index("--eval-task") + 1] == "pick_place_release"
-  assert cmd[cmd.index("--horizon") + 1] == "325"
+  assert cmd[cmd.index("--horizon") + 1] == "350"
   assert cmd[cmd.index("--release-steps") + 1] == "45"
   assert cmd[cmd.index("--release-arm-mode") + 1] == "hold"
   assert cmd[cmd.index("--release-hand-blend") + 1] == "1.0"
