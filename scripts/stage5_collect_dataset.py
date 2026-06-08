@@ -2010,12 +2010,30 @@ def _collect_pickup_noisy_parent(args: argparse.Namespace) -> None:
     )
     _update_object_registry(root, args)
 
+    rollouts_per_init = int(getattr(args, "rollouts_per_init", 1))
     attempted_episodes = int(root.attrs.get("attempted_episodes", 0))
     written_episodes = int(root.attrs.get("written_episodes", 0))
     batch_idx = int(root.attrs.get("last_batch_idx", -1)) + 1
+
+    # Advance RNG to the start of the current init group.
+    # Each init group covers rollouts_per_init consecutive batches and consumes
+    # exactly one (dx, dy) sample; with rollouts_per_init=1 (default) this is
+    # identical to the old per-batch sampling behavior.
+    init_idx = batch_idx // rollouts_per_init
     rng = np.random.default_rng(args.seed)
-    for _ in range(batch_idx):
+    for _ in range(init_idx):
         rng.uniform(-args.xy_range, args.xy_range, size=2)
+
+    # If resuming mid-init, consume that init's (dx, dy) sample now.
+    rollout_in_init = batch_idx % rollouts_per_init
+    current_dx: float
+    current_dy: float
+    if rollout_in_init > 0:
+        _d = rng.uniform(-args.xy_range, args.xy_range, size=2)
+        current_dx, current_dy = float(_d[0]), float(_d[1])
+    else:
+        current_dx, current_dy = 0.0, 0.0  # will be replaced at loop start
+
     t_start = time.time()
 
     while True:
@@ -2027,12 +2045,17 @@ def _collect_pickup_noisy_parent(args: argparse.Namespace) -> None:
         if args.max_attempted_episodes is not None and attempted_episodes >= args.max_attempted_episodes:
             break
 
-        dx, dy = rng.uniform(-args.xy_range, args.xy_range, size=2)
+        # Sample a new (dx, dy) only at the start of each init group.
+        rollout_in_init = batch_idx % rollouts_per_init
+        if rollout_in_init == 0:
+            _d = rng.uniform(-args.xy_range, args.xy_range, size=2)
+            current_dx, current_dy = float(_d[0]), float(_d[1])
+
         cmd = _build_noisy_pickup_worker_cmd(
             args,
             batch_idx=batch_idx,
-            dx=float(dx),
-            dy=float(dy),
+            dx=current_dx,
+            dy=current_dy,
         )
         subprocess.run(cmd, check=True)
 
@@ -2069,9 +2092,11 @@ def _collect_pickup_noisy_parent(args: argparse.Namespace) -> None:
         root.attrs["ou_theta"] = args.ou_theta
         root.attrs["ou_mu"] = args.ou_mu
         root.attrs["ou_dt"] = args.ou_dt
+        root.attrs["rollouts_per_init"] = rollouts_per_init
 
         print(
             f"[stage5-pickup-noisy] parent batch={batch_idx:04d} "
+            f"init_group={batch_idx // rollouts_per_init} rollout_in_init={rollout_in_init} "
             f"total_transitions={n_after}/{args.target_transitions} "
             f"total_episodes={e_after} attempted={attempted_episodes} "
             f"write_success_rate={written_episodes / max(attempted_episodes, 1):.1%} "
@@ -3654,6 +3679,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--table-y-inset-margin", type=float, default=TABLE_Y_INSET_MARGIN_M)
     parser.add_argument("--place-goal-x-margin", type=float, default=PLACE_GOAL_X_MARGIN_M)
     parser.add_argument("--place-goal-y-margin", type=float, default=PLACE_GOAL_Y_MARGIN_M)
+    parser.add_argument(
+        "--rollouts-per-init", type=int, default=1,
+        help="Number of noisy rollouts per sampled (dx, dy) start position (pickup only).",
+    )
     parser.add_argument("--noisy-worker", action="store_true")
     parser.add_argument("--worker-batch-idx", type=int, default=None)
     parser.add_argument("--worker-dx", type=float, default=None)

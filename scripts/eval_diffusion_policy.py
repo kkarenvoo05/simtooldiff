@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Offline eval: roll out a trained diffusion policy in IsaacGym across the
-stage5 object set and report per-object pickup success rate.
+stage5 object set and report per-object success rate.
 
 Subprocess-per-object, mirroring stage5_multi_object_driver.py, because
 IsaacGym dislikes recreating a sim with a different object asset in the
@@ -10,6 +10,7 @@ Usage (driver):
     python scripts/eval_diffusion_policy.py \\
         --checkpoint /path/to/diffusion_policy/data/outputs/.../checkpoints/latest.ckpt \\
         --split train \\
+        --collection-type pickup \\
         --episodes-per-object 32 \\
         --num-envs 8 \\
         --output-json data/diffusion_eval/eval.json
@@ -52,6 +53,8 @@ def _run_one(spec: ObjectSpec, args, result_path: Path) -> dict:
         "--max-success-previews", str(args.max_success_previews),
         "--max-failure-previews", str(args.max_failure_previews),
         "--gif-fps", str(args.gif_fps),
+        "--collection-type", args.collection_type,
+        "--release-steps", str(args.release_steps),
     ]
     if args.video_dir is not None:
         cmd += ["--video-dir", str(args.video_dir / spec.object_name)]
@@ -115,6 +118,7 @@ def run_driver(args) -> None:
     summary = {
         "checkpoint": str(args.checkpoint),
         "split": args.split,
+        "collection_type": args.collection_type,
         "episodes_per_object": args.episodes_per_object,
         "num_envs": args.num_envs,
         "xy_range": args.xy_range,
@@ -143,9 +147,9 @@ def run_driver(args) -> None:
     print(f"[eval-driver] saved {args.output_json}", flush=True)
 
 
-# --------------------------- worker --------------------------------------
+# --------------------------- worker (pickup) --------------------------------------
 
-def run_worker(args) -> None:
+def _run_worker_pickup(args) -> None:
     # IsaacGym must be imported before torch.
     from isaacgym import gymapi  # noqa: F401
     import numpy as np
@@ -392,6 +396,7 @@ def run_worker(args) -> None:
         "succeeded": succeeded,
         "success_rate": success_rate,
         "start_z_offset": args.start_z_offset,
+        "collection_type": "pickup",
         "preview_dir": str(args.video_dir) if save_previews else None,
         "previews_saved": preview_counts if save_previews else {"success": 0, "fail": 0},
     }
@@ -403,6 +408,280 @@ def run_worker(args) -> None:
     )
 
 
+# --------------------------- worker (pick_place_release) ------------------
+
+def _run_worker_ppr(args) -> None:
+    from isaacgym import gymapi  # noqa: F401
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+    import dill
+    import hydra
+    import types
+    from omegaconf import OmegaConf
+
+    import isaacgymenvs  # noqa: F401
+    OmegaConf.register_new_resolver("eval", eval, replace=True)
+
+    from collect_dataset_pick_place_release import (
+        _make_long_table_env,
+        _build_pick_place_release_goals,
+        _sample_end_to_end_start_and_goal_release,
+        LONG_TABLE_X_HALF_EXTENT_M,
+        LONG_TABLE_X_INSET_MARGIN_M,
+        END_BAND_FRACTION,
+    )
+    from stage5_collect_common import (
+        _load_nominal_start_pose,
+        DEFAULT_HORIZON_WITH_RELEASE,
+        N_ACT,
+        LIFT_HEIGHT_M,
+        PLACE_HEIGHT_M,
+        PLACE_HOLD_GOALS,
+        PLACE_GOAL_X_MARGIN_M,
+        PLACE_GOAL_Y_MARGIN_M,
+        MIN_EFFECTIVE_TRANSPORT_M,
+        TABLE_Y_HALF_EXTENT_M,
+        TABLE_Y_INSET_MARGIN_M,
+        TABLE_Z,
+    )
+
+    device = args.device
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
+    ckpt_path = Path(args.checkpoint).expanduser().resolve()
+    payload = torch.load(ckpt_path.open("rb"), pickle_module=dill, map_location=device)
+    cfg = payload["cfg"]
+    ws_cls = hydra.utils.get_class(cfg._target_)
+    workspace = ws_cls(cfg, output_dir=tempfile.mkdtemp(prefix="dp_eval_"))
+    workspace.load_payload(payload)
+    policy = workspace.ema_model if cfg.training.use_ema and workspace.ema_model is not None else workspace.model
+    policy.to(device).eval()
+
+    n_obs_steps = int(cfg.n_obs_steps)
+    n_action_steps = int(cfg.n_action_steps)
+    state_dim = int(cfg.task.state_dim)
+    image_shape = tuple(int(x) for x in cfg.task.image_shape)
+    target_h, target_w = image_shape[1], image_shape[2]
+    print(
+        f"[eval-worker-ppr] policy: To={n_obs_steps} k={n_action_steps} "
+        f"state_dim={state_dim} image={image_shape}",
+        flush=True,
+    )
+
+    nominal_start_pose = _load_nominal_start_pose(
+        args.object_category,
+        args.object_name,
+        args.task_name,
+        start_z_offset=args.start_z_offset,
+    )
+
+    # Build placeholder goals for initial env creation.
+    x_min = -LONG_TABLE_X_HALF_EXTENT_M + LONG_TABLE_X_INSET_MARGIN_M
+    x_max = LONG_TABLE_X_HALF_EXTENT_M - LONG_TABLE_X_INSET_MARGIN_M
+    nominal_goal_x = x_max - (x_max - x_min) * END_BAND_FRACTION * 0.5
+    init_goals, _, _ = _build_pick_place_release_goals(
+        nominal_start_pose,
+        goal_x=nominal_goal_x,
+        lift_height=LIFT_HEIGHT_M,
+        place_height=PLACE_HEIGHT_M,
+        place_hold_goals=PLACE_HOLD_GOALS,
+        release_hold_goals=args.release_steps,
+    )
+
+    # Scale episode_length by n_action_steps so the per-goal timeout matches the
+    # outer loop capacity. Without this, the env fires a done after only
+    # (args.horizon + 2) env steps per goal, which is far too short when the
+    # diffusion policy executes n_action_steps env steps per policy query.
+    env_horizon = args.horizon * n_action_steps
+    print("[eval-worker-ppr] creating env...", flush=True)
+    env = _make_long_table_env(
+        num_envs=1,
+        nominal_start_pose=nominal_start_pose,
+        goal_poses=init_goals,
+        horizon=env_horizon,
+        headless=True,
+        device=device,
+        seed=args.seed,
+        object_name=args.object_name,
+    )
+
+    # Namespace with table geometry constants for the sampling helper.
+    table_args = types.SimpleNamespace(
+        table_x_half_extent=LONG_TABLE_X_HALF_EXTENT_M,
+        table_x_inset_margin=LONG_TABLE_X_INSET_MARGIN_M,
+        table_y_half_extent=TABLE_Y_HALF_EXTENT_M,
+        table_y_inset_margin=TABLE_Y_INSET_MARGIN_M,
+        place_goal_x_margin=PLACE_GOAL_X_MARGIN_M,
+        place_goal_y_margin=PLACE_GOAL_Y_MARGIN_M,
+        min_effective_transport=MIN_EFFECTIVE_TRANSPORT_M,
+        xy_range=args.xy_range,
+    )
+    rng = np.random.default_rng(args.seed)
+    env_ids = torch.tensor([0], device=device, dtype=torch.long)
+    active_envs = torch.zeros(1, device=device, dtype=torch.long)
+
+    def render_step():
+        raw = env.render_dataset_camera_rgb(active_envs)
+        native_np = raw.detach().cpu().numpy().astype(np.uint8)
+        img = raw.float() / 255.0
+        img = img.permute(0, 3, 1, 2).contiguous()
+        if img.shape[-2:] != (target_h, target_w):
+            img = F.interpolate(img, size=(target_h, target_w), mode="bilinear", align_corners=False)
+        return native_np, img
+
+    save_previews = (args.video_dir is not None) and (
+        args.max_success_previews > 0 or args.max_failure_previews > 0
+    )
+    if save_previews:
+        Path(args.video_dir).mkdir(parents=True, exist_ok=True)
+        import imageio.v2 as imageio  # noqa: WPS433
+    preview_caps = {"success": int(args.max_success_previews), "fail": int(args.max_failure_previews)}
+    preview_counts = {"success": 0, "fail": 0}
+    MIN_PREVIEW_FRAMES = 8
+
+    attempted = 0
+    succeeded = 0
+    target = args.episodes_per_object
+
+    while attempted < target:
+        # Sample start pose and goal x for this episode.
+        try:
+            start_pose, goal_x, _ = _sample_end_to_end_start_and_goal_release(
+                env, rng, nominal_start_pose, table_args,
+            )
+        except ValueError:
+            continue
+
+        goals, release_start_goal_idx, _ = _build_pick_place_release_goals(
+            start_pose,
+            goal_x=goal_x,
+            lift_height=LIFT_HEIGHT_M,
+            place_height=PLACE_HEIGHT_M,
+            place_hold_goals=PLACE_HOLD_GOALS,
+            release_hold_goals=args.release_steps,
+        )
+
+        goals_t = torch.tensor(goals, device=device, dtype=env.trajectory_states.dtype)
+        env.trajectory_states = goals_t
+        env.max_consecutive_successes = len(goals)
+        env.object_init_state[env_ids, 0:7] = torch.tensor(
+            [start_pose], device=device, dtype=env.object_init_state.dtype,
+        )
+        env.cfg["env"]["tableObjectZOffset"] = float(start_pose[2] - TABLE_Z)
+        env.reset_idx(env_ids, tensor_reset=True)
+        policy.reset()
+
+        # Prime with a zero action (mirrors collection reset pattern).
+        zero_action = torch.zeros((1, N_ACT), device=device)
+        obs_dict, _, _, _ = env.step(zero_action)
+        obs = obs_dict["obs"]
+
+        # Skip episodes where the object fell off the table during initialization.
+        init_object_z = float(env.object_pose[0, 2].item())
+        if init_object_z < float(start_pose[2]) - 0.05:
+            print(
+                f"[eval-worker-ppr] {args.object_name}: object fell off table at init "
+                f"(z={init_object_z:.3f} vs start_z={start_pose[2]:.3f}), skipping",
+                flush=True,
+            )
+            continue
+
+        init_native, init_normalized = render_step()
+        image_history = deque(
+            [init_normalized.clone() for _ in range(n_obs_steps)],
+            maxlen=n_obs_steps,
+        )
+        state_history = deque(
+            [obs[:, :state_dim].float().contiguous().clone() for _ in range(n_obs_steps)],
+            maxlen=n_obs_steps,
+        )
+        ep_frames = [init_native[0]] if save_previews else []
+
+        max_successes_seen = 0
+        episode_done = False
+
+        for _ in range(args.horizon):
+            if episode_done:
+                break
+            with torch.no_grad():
+                obs_input = {
+                    "image": torch.stack(list(image_history), dim=1),
+                    "agent_pos": torch.stack(list(state_history), dim=1),
+                }
+                action_seq = policy.predict_action(obs_input)["action"]
+            action_seq = torch.clamp(action_seq, -1.0, 1.0)
+
+            for k in range(n_action_steps):
+                # Read successes BEFORE step: env auto-resets on done and
+                # clears env.successes to 0 inside env.step.
+                max_successes_seen = max(max_successes_seen, int(env.successes[0].item()))
+                obs_dict, _, done, _ = env.step(action_seq[:, k])
+                obs = obs_dict["obs"]
+                native_np, normalized_img = render_step()
+                if save_previews:
+                    ep_frames.append(native_np[0])
+                image_history.append(normalized_img)
+                state_history.append(obs[:, :state_dim].float().contiguous())
+                if bool(done[0].item()):
+                    episode_done = True
+                    break
+
+        attempted += 1
+        # Success = completed pick-and-place (reached release phase goals).
+        ok = max_successes_seen >= release_start_goal_idx
+        if ok:
+            succeeded += 1
+
+        if save_previews:
+            outcome = "success" if ok else "fail"
+            if (preview_counts[outcome] < preview_caps[outcome]
+                    and len(ep_frames) >= MIN_PREVIEW_FRAMES):
+                idx = preview_counts[outcome]
+                gif_path = Path(args.video_dir) / (
+                    f"{outcome}_{idx:02d}_attempt{attempted:03d}.gif"
+                )
+                imageio.mimsave(
+                    gif_path,
+                    np.stack(ep_frames, axis=0),
+                    duration=1000.0 / max(args.gif_fps, 1),
+                )
+                preview_counts[outcome] += 1
+
+        sr = succeeded / max(attempted, 1)
+        print(f"[eval-worker-ppr] {args.object_name}: {succeeded}/{attempted} ({sr:.1%})", flush=True)
+
+    success_rate = succeeded / max(attempted, 1)
+    result = {
+        "object_id": args.object_id,
+        "category_id": args.category_id,
+        "object_name": args.object_name,
+        "object_category": args.object_category,
+        "task_name": args.task_name,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "success_rate": success_rate,
+        "start_z_offset": args.start_z_offset,
+        "collection_type": "pick_place_release",
+        "preview_dir": str(args.video_dir) if save_previews else None,
+        "previews_saved": preview_counts if save_previews else {"success": 0, "fail": 0},
+    }
+    Path(args.result_json).write_text(json.dumps(result, indent=2))
+    print(
+        f"[eval-worker-ppr] DONE {args.object_name}: "
+        f"{succeeded}/{attempted} = {success_rate:.1%}",
+        flush=True,
+    )
+
+
+def run_worker(args) -> None:
+    if args.collection_type == "pick_place_release":
+        _run_worker_ppr(args)
+    else:
+        _run_worker_pickup(args)
+
+
 # --------------------------- argparse / main ------------------------------
 
 def parse_args() -> argparse.Namespace:
@@ -412,7 +691,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--split", choices=("train", "ood"), default="train")
     p.add_argument("--episodes-per-object", type=int, default=32)
     p.add_argument("--num-envs", type=int, default=8)
-    p.add_argument("--horizon", type=int, default=250)
+    p.add_argument("--horizon", type=int, default=325,
+                   help="Outer policy-query iterations per episode. The env episode_length is "
+                        "scaled by n_action_steps internally for PPR to avoid per-goal timeouts.")
     p.add_argument("--xy-range", type=float, default=0.10)
     p.add_argument(
         "--start-z-offset",
@@ -425,6 +706,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cuda:0")
+    p.add_argument(
+        "--collection-type",
+        choices=("pickup", "pick_place_release"),
+        default="pickup",
+        help="Eval mode: pickup uses Z-height success; pick_place_release uses goals-reached success.",
+    )
+    p.add_argument(
+        "--release-steps", type=int, default=45,
+        help="Number of release-hold goals in the PPR goal sequence (pick_place_release only).",
+    )
     p.add_argument(
         "--output-json",
         type=Path,

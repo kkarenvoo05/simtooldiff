@@ -19,6 +19,8 @@ import numpy as np
 from isaacgym import gymapi  # noqa: F401
 import torch
 
+from closure_gate import ClosureGate, ClosureGateConfig
+
 from stage5_collect_common import (
     CHECKPOINT_PATH,
     COLLECTION_TYPES,
@@ -68,17 +70,6 @@ from stage5_collect_common import (
     _update_noisy_metric_attrs,
     _update_object_registry,
     _write_rollout_video,
-)
-from stage5_anchored_recovery import (
-    AnchoredBranchSnapshot,
-    AnchoredRecoveryConfig,
-    build_anchored_recovery_config,
-    maybe_fork_rng,
-    run_anchored_branch,
-    sample_branch_trigger_steps,
-    update_anchored_root_attrs,
-    validate_anchored_args,
-    validate_anchored_resume_attrs,
 )
 
 
@@ -557,6 +548,11 @@ def _record_geometry_attrs(root, args: argparse.Namespace) -> None:
     root.attrs["table_y_half_extent"] = float(args.table_y_half_extent)
     root.attrs["table_x_inset_margin"] = float(args.table_x_inset_margin)
     root.attrs["table_y_inset_margin"] = float(args.table_y_inset_margin)
+    # Phase-gated-noise config (static; fired-counters are added per-rollout).
+    for key, value in _build_closure_gate_config(args).to_attrs().items():
+        root.attrs[key] = value
+    root.attrs["finger_noise_multiplier"] = float(args.finger_noise_multiplier)
+    root.attrs["wrist_noise_multiplier"] = float(args.wrist_noise_multiplier)
 
 
 def _zero_noise_metrics() -> Dict[str, float]:
@@ -585,440 +581,60 @@ def _build_group_noise_sampler(args: argparse.Namespace):
     return _sample
 
 
-def _capture_branch_snapshot(env, policy, obs: torch.Tensor) -> AnchoredBranchSnapshot:
-    env_ids = torch.tensor([0], device=env.device, dtype=torch.long)
-    return AnchoredBranchSnapshot(
-        env_state=env.capture_branch_state(env_ids),
-        policy_state=policy.get_internal_state(),
-        obs=obs.clone(),
+def _build_closure_gate_config(args: argparse.Namespace) -> ClosureGateConfig:
+    groups = [g.strip() for g in str(args.closure_groups).split(",") if g.strip()]
+    return ClosureGateConfig(
+        mode=args.noise_phase_gating,
+        proximity_threshold=args.closure_proximity_threshold,
+        palm_z_threshold=args.closure_palm_z_threshold,
+        noise_scale=args.closure_noise_scale,
+        groups=groups,
+        padding=args.closure_window_padding,
     )
 
 
-def _restore_branch_snapshot(
-    env,
-    policy,
-    snapshot: AnchoredBranchSnapshot,
-) -> torch.Tensor:
-    env.restore_branch_state(snapshot.env_state, snapshot.env_state["env_ids"])
-    policy.set_internal_state(snapshot.policy_state)
-    return snapshot.obs.clone()
+def _record_closure_gate_attrs(root, cfg: ClosureGateConfig, diagnostics: Dict[str, int]) -> None:
+    for key, value in cfg.to_attrs().items():
+        root.attrs[key] = value
+    for key, value in diagnostics.items():
+        root.attrs[key] = int(root.attrs.get(key, 0)) + int(value)
 
 
-def _run_anchored_pick_place_rollout(
-    *,
-    env,
-    args: argparse.Namespace,
-    device: str,
-    policy,
-    start_pose: List[float],
-    goals: List[List[float]],
-    rollout_idx: int,
-    verbose_steps: bool,
-    rng: np.random.Generator,
-    anchored_config: AnchoredRecoveryConfig,
-):
-    env_ids = torch.tensor([0], device=env.device, dtype=torch.long)
-    goals_t = torch.tensor(goals, device=env.device, dtype=env.trajectory_states.dtype)
-    env.trajectory_states = goals_t
-    env.max_consecutive_successes = len(goals)
-    env.object_init_state[env_ids, 0:7] = torch.tensor(
-        [start_pose], device=env.device, dtype=env.object_init_state.dtype
-    )
-    env.cfg["env"]["tableObjectZOffset"] = float(start_pose[2] - TABLE_Z)
-    env.reset_idx(env_ids, tensor_reset=True)
-    policy.reset()
-
-    zero_action = torch.zeros((env.num_envs, N_ACT), device=device)
-    obs_dict, _, _, _ = env.step(zero_action)
-    obs = obs_dict["obs"]
-    total_env_steps = 1
-    active_envs = torch.arange(env.num_envs, device=device, dtype=torch.long)
-    noise_sampler = _build_group_noise_sampler(args)
-    trigger_steps = set(
-        sample_branch_trigger_steps(
-            rng=rng,
-            branch_min_step=anchored_config.branch_min_step,
-            branch_max_step=anchored_config.branch_max_step,
-            branches_per_rollout=anchored_config.branches_per_rollout,
-            min_gap=anchored_config.branch_gap,
-        )
-    )
-
-    branch_buffers: List = []
-    branch_noise_metrics = _zero_noise_metrics()
-    branch_stats = {"attempted": 0, "aborted": 0}
-
-    stage_names: List[str] = []
-    goal_dists: List[float] = []
-    successes_per_step: List[int] = []
-    max_successes_seen = 0
-    final_successes = 0
-    viewer_closed = False
-    prev_stage_idx = -1
-
-    for step in range(args.horizon):
-        if env.viewer is not None and env.gym.query_viewer_has_closed(env.viewer):
-            viewer_closed = True
-            break
-
-        if step in trigger_steps:
-            branch_stats["attempted"] += 1
-            snapshot = _capture_branch_snapshot(env, policy, obs)
-            with maybe_fork_rng(device):
-                branch_result = run_anchored_branch(
-                    env=env,
-                    device=device,
-                    obs=obs.clone(),
-                    config=anchored_config,
-                    active_envs=active_envs,
-                    build_clean_action=lambda current_obs: policy.get_normalized_action(
-                        current_obs, deterministic_actions=True
-                    ),
-                    sample_group_noise=noise_sampler,
-                )
-            obs = _restore_branch_snapshot(env, policy, snapshot)
-            total_env_steps += branch_result.steps_executed
-            if branch_result.aborted_reason == "viewer_closed":
-                viewer_closed = True
-                break
-            if branch_result.success:
-                if branch_result.saved_transitions > 0:
-                    branch_buffers.append(branch_result.buffer)
-                    _accumulate_noise_metrics(
-                        branch_noise_metrics,
-                        branch_result.noise_metrics,
-                    )
-            else:
-                branch_stats["aborted"] += 1
-
-        action_t = policy.get_normalized_action(obs, deterministic_actions=True)
-        obs_dict, _, done, _ = env.step(action_t)
-        obs = obs_dict["obs"]
-        total_env_steps += 1
-
-        final_successes = int(env.successes[0].item())
-        max_successes_seen = max(max_successes_seen, final_successes)
-        current_goal_idx = min(final_successes, len(goals) - 1)
-        stage_idx = min(current_goal_idx, len(GOAL_STAGE_NAMES) - 1)
-        stage_name = _goal_stage_name(current_goal_idx)
-        goal_dist = float(env.keypoints_max_dist[0].item())
-        stage_names.append(stage_name)
-        goal_dists.append(goal_dist)
-        successes_per_step.append(final_successes)
-
-        if verbose_steps:
-            print(
-                f"[stage5-long-table] rollout={rollout_idx:04d} step={step:03d} "
-                f"subgoal_idx={stage_idx} goal_idx={current_goal_idx} stage={stage_name} "
-                f"distance={goal_dist:.4f} successes={final_successes}/{len(goals)}",
-                flush=True,
-            )
-        elif stage_idx != prev_stage_idx:
-            print(
-                f"[stage5-long-table] rollout={rollout_idx:04d} advanced_to={stage_name} "
-                f"(subgoal_idx={stage_idx}, goal_idx={current_goal_idx}, "
-                f"distance={goal_dist:.4f}, successes={final_successes}/{len(goals)})",
-                flush=True,
-            )
-        prev_stage_idx = stage_idx
-
-        if bool(done[0].item()):
-            break
-
-    success = max_successes_seen >= len(goals)
-    failure_stage = _failure_stage_from_successes(max_successes_seen, len(goals))
-    return (
-        RolloutResult(
-            success=success,
-            viewer_closed=viewer_closed,
-            steps=total_env_steps,
-            max_successes_seen=max_successes_seen,
-            final_successes=final_successes,
-            failure_stage=failure_stage,
-            img=None,
-            state=None,
-            action=None,
-            stage_names=stage_names,
-            goal_dists=goal_dists,
-            successes_per_step=successes_per_step,
-        ),
-        branch_buffers,
-        branch_noise_metrics,
-        branch_stats,
-    )
+_orig_resolve_noise_args = _resolve_noise_args
 
 
-def _run_anchored_release_rollout(
-    *,
-    env,
-    args: argparse.Namespace,
-    device: str,
-    policy,
-    start_pose: List[float],
-    goals: List[List[float]],
-    release_start_goal_idx: int,
-    place_goal: List[float],
-    rollout_idx: int,
-    verbose_steps: bool,
-    rng: np.random.Generator,
-    anchored_config: AnchoredRecoveryConfig,
-):
-    env_ids = torch.tensor([0], device=env.device, dtype=torch.long)
-    goals_t = torch.tensor(goals, device=env.device, dtype=env.trajectory_states.dtype)
-    env.trajectory_states = goals_t
-    env.max_consecutive_successes = len(goals)
-    env.object_init_state[env_ids, 0:7] = torch.tensor(
-        [start_pose], device=env.device, dtype=env.object_init_state.dtype
-    )
-    env.cfg["env"]["tableObjectZOffset"] = float(start_pose[2] - TABLE_Z)
-    env.reset_idx(env_ids, tensor_reset=True)
-    policy.reset()
+def _resolve_noise_args(args: argparse.Namespace) -> argparse.Namespace:  # noqa: F811
+    """Resolve per-group noise, then apply the blunt-fallback multipliers.
 
-    zero_action = torch.zeros((env.num_envs, N_ACT), device=device)
-    obs_dict, _, _, _ = env.step(zero_action)
-    obs = obs_dict["obs"]
-    total_env_steps = 1
-    active_envs = torch.arange(env.num_envs, device=device, dtype=torch.long)
-    open_hand_action = _compute_open_hand_action(env)
-    noise_sampler = _build_group_noise_sampler(args)
-    trigger_steps = set(
-        sample_branch_trigger_steps(
-            rng=rng,
-            branch_min_step=anchored_config.branch_min_step,
-            branch_max_step=anchored_config.branch_max_step,
-            branches_per_rollout=anchored_config.branches_per_rollout,
-            min_gap=anchored_config.branch_gap,
-        )
-    )
+    Wraps the imported ``_resolve_noise_args`` so ``--finger-noise-multiplier`` /
+    ``--wrist-noise-multiplier`` take effect in every collection path (including
+    the single-process pick_place_release one). The collector is the single
+    point that applies the multipliers; the driver only forwards the flags.
+    """
+    args = _orig_resolve_noise_args(args)
+    finger_mult = float(getattr(args, "finger_noise_multiplier", 1.0))
+    wrist_mult = float(getattr(args, "wrist_noise_multiplier", 1.0))
+    for key in ("thumb_noise", "index_noise", "middle_noise", "ring_noise", "pinky_noise"):
+        value = getattr(args, key, None)
+        if value is not None:
+            setattr(args, key, float(value) * finger_mult)
+    if getattr(args, "arm_wrist_noise", None) is not None:
+        args.arm_wrist_noise = float(args.arm_wrist_noise) * wrist_mult
+    return args
 
-    branch_buffers: List = []
-    branch_noise_metrics = _zero_noise_metrics()
-    branch_stats = {"attempted": 0, "aborted": 0}
-    stage_names: List[str] = []
-    goal_dists: List[float] = []
-    successes_per_step: List[int] = []
-    release_phase_per_step: List[bool] = []
 
-    max_successes_seen = 0
-    final_successes = 0
-    viewer_closed = False
-    prev_stage_name: Optional[str] = None
-    release_start_step: Optional[int] = None
-    dropped_after_lift = False
-    drop_step: Optional[int] = None
-    drop_successes_before: Optional[int] = None
-    reattempted_after_drop = False
-    max_object_height_above_init_m = 0.0
-
-    def _build_clean_action(current_obs: torch.Tensor) -> torch.Tensor:
-        current_action_t = policy.get_normalized_action(
-            current_obs,
-            deterministic_actions=True,
-        )
-        if (
-            args.release_steps > 0
-            and int(env.successes[0].item()) >= release_start_goal_idx
-        ):
-            current_action_t = _build_release_action(
-                policy_action_t=current_action_t,
-                open_hand_action=open_hand_action,
-                arm_mode=args.release_arm_mode,
-                hand_blend=args.release_hand_blend,
-            )
-        return current_action_t
-
-    for step in range(args.horizon):
-        if env.viewer is not None and env.gym.query_viewer_has_closed(env.viewer):
-            viewer_closed = True
-            break
-
-        current_successes = int(env.successes[0].item())
-        in_release_phase = (
-            args.release_steps > 0 and current_successes >= release_start_goal_idx
-        )
-        if in_release_phase and release_start_step is None:
-            release_start_step = step
-
-        if not in_release_phase and step in trigger_steps:
-            branch_stats["attempted"] += 1
-            snapshot = _capture_branch_snapshot(env, policy, obs)
-            with maybe_fork_rng(device):
-                branch_result = run_anchored_branch(
-                    env=env,
-                    device=device,
-                    obs=obs.clone(),
-                    config=anchored_config,
-                    active_envs=active_envs,
-                    build_clean_action=_build_clean_action,
-                    sample_group_noise=noise_sampler,
-                )
-            obs = _restore_branch_snapshot(env, policy, snapshot)
-            total_env_steps += branch_result.steps_executed
-            if branch_result.aborted_reason == "viewer_closed":
-                viewer_closed = True
-                break
-            if branch_result.success:
-                if branch_result.saved_transitions > 0:
-                    branch_buffers.append(branch_result.buffer)
-                    _accumulate_noise_metrics(
-                        branch_noise_metrics,
-                        branch_result.noise_metrics,
-                    )
-            else:
-                branch_stats["aborted"] += 1
-
-        clean_action_t = _build_clean_action(obs)
-        obs_dict, _, done, _ = env.step(clean_action_t)
-        obs = obs_dict["obs"]
-        total_env_steps += 1
-
-        final_successes = int(env.successes[0].item())
-        max_successes_seen = max(max_successes_seen, final_successes)
-        goal_dist = float(env.keypoints_max_dist[0].item())
-        object_height_above_init_m = float(
-            env.object_pose[0, 2].item() - env.object_init_state[0, 2].item()
-        )
-        max_object_height_above_init_m = max(
-            max_object_height_above_init_m,
-            object_height_above_init_m,
-        )
-        dropped_now = _drop_detected_after_pickup_attempt(
-            object_height_above_init_m=object_height_above_init_m,
-            max_object_height_above_init_m=max_object_height_above_init_m,
-            lifted_object=bool(env.lifted_object[0].item()),
-            in_release_phase=in_release_phase,
-        )
-        if dropped_now and not dropped_after_lift:
-            dropped_after_lift = True
-            drop_step = step
-            drop_successes_before = final_successes
-        elif (
-            dropped_after_lift
-            and not reattempted_after_drop
-            and drop_successes_before is not None
-            and final_successes > drop_successes_before
-        ):
-            reattempted_after_drop = True
-
-        stage_name = (
-            "release"
-            if in_release_phase
-            else _release_goal_stage_name(current_successes, release_start_goal_idx)
-        )
-        stage_names.append(stage_name)
-        goal_dists.append(goal_dist)
-        successes_per_step.append(final_successes)
-        release_phase_per_step.append(bool(in_release_phase))
-
-        if verbose_steps:
-            print(
-                f"[stage5-release-long-table] rollout={rollout_idx:04d} step={step:03d} "
-                f"stage={stage_name} successes={final_successes}/{len(goals)} "
-                f"goal_dist={goal_dist:.4f}",
-                flush=True,
-            )
-        elif stage_name != prev_stage_name:
-            print(
-                f"[stage5-release-long-table] rollout={rollout_idx:04d} advanced_to={stage_name} "
-                f"(goal_dist={goal_dist:.4f}, successes={final_successes}/{len(goals)})",
-                flush=True,
-            )
-        prev_stage_name = stage_name
-
-        if final_successes >= len(goals):
-            print(
-                f"[stage5-release-long-table] rollout={rollout_idx:04d} completed_release_goals "
-                f"step={step:03d}",
-                flush=True,
-            )
-            break
-        if bool(done[0].item()):
-            break
-
-    final_object_pose_np = env.object_pose[0, 0:7].detach().cpu().numpy()
-    final_object_linvel_np = env.object_linvel[0].detach().cpu().numpy()
-    place_goal_np = np.asarray(place_goal, dtype=np.float32)
-    final_place_xy_error_m = float(
-        np.linalg.norm(final_object_pose_np[0:2] - place_goal_np[0:2])
-    )
-    final_place_z_error_m = float(abs(final_object_pose_np[2] - place_goal_np[2]))
-    final_place_pos_error_m = float(
-        np.linalg.norm(final_object_pose_np[0:3] - place_goal_np[0:3])
-    )
-    final_object_speed_mps = float(np.linalg.norm(final_object_linvel_np))
-    entered_release_phase = release_start_step is not None
-    release_steps_executed = sum(1 for value in release_phase_per_step if value)
-    final_object_on_table = _final_object_on_table(
-        env,
-        final_object_pose_np,
-        table_x_half_extent=args.table_x_half_extent,
-        table_x_inset_margin=args.table_x_inset_margin,
-        table_y_half_extent=args.table_y_half_extent,
-        table_y_inset_margin=args.table_y_inset_margin,
-    )
-    (
-        pick_place_success,
-        release_goal_success,
-        release_stable,
-        release_success,
-        failure_stage,
-    ) = _classify_release_outcome(
-        max_successes_seen=max_successes_seen,
-        release_start_goal_idx=release_start_goal_idx,
-        total_goals=len(goals),
-        entered_release_phase=entered_release_phase,
-        final_object_on_table=final_object_on_table,
-        final_place_xy_error_m=final_place_xy_error_m,
-        final_place_z_error_m=final_place_z_error_m,
-        final_object_speed_mps=final_object_speed_mps,
-        release_xy_tolerance=args.release_xy_tolerance,
-        release_z_tolerance=args.release_z_tolerance,
-        release_speed_tolerance=args.release_speed_tolerance,
-        reattempted_after_drop=reattempted_after_drop,
-    )
-
-    return (
-        ReleaseRolloutResult(
-            success=release_success,
-            viewer_closed=viewer_closed,
-            steps=total_env_steps,
-            pick_place_success=pick_place_success,
-            release_goal_success=release_goal_success,
-            release_success=release_success,
-            release_stable=release_stable,
-            final_object_on_table=final_object_on_table,
-            entered_release_phase=entered_release_phase,
-            release_start_step=release_start_step,
-            release_steps_executed=release_steps_executed,
-            max_successes_seen=max_successes_seen,
-            final_successes=final_successes,
-            failure_stage=failure_stage,
-            dropped_after_lift=dropped_after_lift,
-            drop_step=drop_step,
-            drop_successes_before=drop_successes_before,
-            reattempted_after_drop=reattempted_after_drop,
-            final_object_pose=np.round(final_object_pose_np, 5).tolist(),
-            final_object_linvel=np.round(final_object_linvel_np, 5).tolist(),
-            final_place_pos_error_m=final_place_pos_error_m,
-            final_place_xy_error_m=final_place_xy_error_m,
-            final_place_z_error_m=final_place_z_error_m,
-            final_object_speed_mps=final_object_speed_mps,
-            img=None,
-            state=None,
-            action=None,
-            stage_names=stage_names,
-            goal_dists=goal_dists,
-            successes_per_step=successes_per_step,
-            release_phase_per_step=release_phase_per_step,
-            noise_action_delta_l2_sum=branch_noise_metrics["l2_sum"],
-            noise_action_delta_l2_sq_sum=branch_noise_metrics["l2_sq_sum"],
-            noise_action_delta_linf_sum=branch_noise_metrics["linf_sum"],
-            noise_action_delta_count=branch_noise_metrics["count"],
-        ),
-        branch_buffers,
-        branch_noise_metrics,
-        branch_stats,
-    )
+def _closure_worker_flags(args: argparse.Namespace) -> List[str]:
+    """Flags forwarded to worker subprocesses so they gate noise identically."""
+    return [
+        "--noise-phase-gating", str(args.noise_phase_gating),
+        "--closure-proximity-threshold", str(args.closure_proximity_threshold),
+        "--closure-palm-z-threshold", str(args.closure_palm_z_threshold),
+        "--closure-noise-scale", str(args.closure_noise_scale),
+        "--closure-groups", str(args.closure_groups),
+        "--closure-window-padding", str(args.closure_window_padding),
+        "--finger-noise-multiplier", str(args.finger_noise_multiplier),
+        "--wrist-noise-multiplier", str(args.wrist_noise_multiplier),
+    ]
 
 
 def _run_clean_rollout(
@@ -1458,258 +1074,6 @@ def _collect_clean(args: argparse.Namespace) -> None:
         _destroy_env(env)
 
 
-def _collect_anchored_pick_place(args: argparse.Namespace) -> None:
-    from deployment.rl_player import RlPlayer
-
-    assert CONFIG_PATH.exists(), f"Missing policy config: {CONFIG_PATH}"
-    assert CHECKPOINT_PATH.exists(), f"Missing policy checkpoint: {CHECKPOINT_PATH}"
-
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    anchored_config = build_anchored_recovery_config(args)
-    rng = np.random.default_rng(args.seed)
-    torch.manual_seed(args.seed)
-
-    root = None
-    n0 = 0
-    e0 = 0
-    if not args.dry_run:
-        root = _open_or_create_zarr(
-            args.output_zarr,
-            img_h=DATASET_CAMERA_HEIGHT,
-            img_w=DATASET_CAMERA_WIDTH,
-            resume=args.resume,
-        )
-        n0, e0 = _current_counts(root)
-        if args.resume:
-            validate_anchored_resume_attrs(
-                root,
-                variant=args.variant,
-                config=anchored_config,
-            )
-        _update_object_registry(root, args)
-        _record_geometry_attrs(root, args)
-        root.attrs["collection_task"] = "pick_place"
-        update_anchored_root_attrs(
-            root,
-            variant=args.variant,
-            config=anchored_config,
-            base_rollouts_attempted=0,
-            base_rollouts_succeeded=0,
-            branches_attempted=0,
-            branches_written=0,
-            branches_aborted=0,
-            saved_transitions=0,
-        )
-
-    nominal_start_pose = _load_nominal_start_pose(
-        args.object_category,
-        args.object_name,
-        args.task_name,
-        start_z_offset=args.start_z_offset,
-    )
-    bootstrap_goal_x = _default_goal_x(args)
-    bootstrap_goals = _build_pick_place_goals(
-        nominal_start_pose,
-        goal_x=bootstrap_goal_x,
-        lift_height=args.lift_height,
-        place_height=args.place_height,
-        place_hold_goals=args.place_hold_goals,
-    )
-
-    print(f"[stage5-long-table-anchored] output_zarr={args.output_zarr}", flush=True)
-    print(
-        f"[stage5-long-table-anchored] starting counts: transitions={n0}, episodes={e0}",
-        flush=True,
-    )
-    print(
-        f"[stage5-long-table-anchored] object={args.object_category}/{args.object_name} "
-        f"task={args.task_name} object_id={args.object_id} category_id={args.category_id}",
-        flush=True,
-    )
-    print(
-        f"[stage5-long-table-anchored] target_transitions={args.target_transitions} "
-        f"branches_per_rollout={anchored_config.branches_per_rollout} "
-        f"perturb_steps={anchored_config.perturb_steps} "
-        f"recovery_steps={anchored_config.recovery_steps} "
-        f"branch_window=[{anchored_config.branch_min_step}, {anchored_config.branch_max_step}]",
-        flush=True,
-    )
-
-    env = _make_long_table_env(
-        num_envs=1,
-        nominal_start_pose=nominal_start_pose,
-        goal_poses=bootstrap_goals,
-        horizon=args.horizon,
-        headless=not args.viewer,
-        device=device,
-        seed=args.seed,
-        object_name=args.object_name,
-    )
-    env.gym.refresh_actor_root_state_tensor(env.sim)
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-    env.set_env_state(checkpoint[0]["env_state"])
-    print(
-        f"[stage5-long-table-anchored] camera pos={_jsonable(env.cfg['env']['datasetCameraPosition'])} "
-        f"target={_jsonable(env.cfg['env']['datasetCameraTarget'])}",
-        flush=True,
-    )
-    policy = RlPlayer(
-        num_observations=N_OBS,
-        num_actions=N_ACT,
-        config_path=str(CONFIG_PATH),
-        checkpoint_path=str(CHECKPOINT_PATH),
-        device=device,
-        num_envs=1,
-    )
-
-    attempted_rollouts = 0
-    successful_completions = 0
-    written_episodes = 0
-    discarded_unsuccessful = 0
-    discarded_invalid = 0
-    failure_breakdown: Dict[str, int] = {name: 0 for name in GOAL_STAGE_NAMES}
-    anchored_base_rollouts_attempted = 0
-    anchored_base_rollouts_succeeded = 0
-    anchored_branches_attempted = 0
-    anchored_branches_written = 0
-    anchored_branches_aborted = 0
-    anchored_saved_transitions = 0
-    total_env_steps = 0
-    t_start = time.time()
-    max_rollouts = args.dry_run_rollouts if args.dry_run else None
-
-    try:
-        while True:
-            n_transitions = _current_counts(root)[0] if root is not None else 0
-            if not args.dry_run and n_transitions >= args.target_transitions:
-                break
-            if max_rollouts is not None and attempted_rollouts >= max_rollouts:
-                break
-            if (
-                args.max_attempted_episodes is not None
-                and attempted_rollouts >= args.max_attempted_episodes
-            ):
-                break
-            if args.max_steps is not None and total_env_steps >= args.max_steps:
-                break
-
-            rollout_idx = attempted_rollouts
-            start_pose, goal_x, lateral_offset = _sample_end_to_end_start_and_goal(
-                rng,
-                nominal_start_pose,
-                args,
-            )
-            goals = _build_pick_place_goals(
-                start_pose,
-                goal_x=goal_x,
-                lift_height=args.lift_height,
-                place_height=args.place_height,
-                place_hold_goals=args.place_hold_goals,
-            )
-
-            print(
-                f"\n[stage5-long-table-anchored] rollout={rollout_idx:04d} "
-                f"start_pose={np.array(start_pose).round(4).tolist()} "
-                f"goal_x={goal_x:+.3f} lateral_offset={lateral_offset:+.3f}",
-                flush=True,
-            )
-
-            result, branch_buffers, branch_noise_metrics, branch_stats = (
-                _run_anchored_pick_place_rollout(
-                    env=env,
-                    args=args,
-                    device=device,
-                    policy=policy,
-                    start_pose=start_pose,
-                    goals=goals,
-                    rollout_idx=rollout_idx,
-                    verbose_steps=args.log_every_step,
-                    rng=rng,
-                    anchored_config=anchored_config,
-                )
-            )
-            attempted_rollouts += 1
-            anchored_base_rollouts_attempted += 1
-            total_env_steps += result.steps
-            anchored_branches_attempted += branch_stats["attempted"]
-            anchored_branches_aborted += branch_stats["aborted"]
-
-            if result.viewer_closed:
-                break
-
-            if result.success:
-                successful_completions += 1
-                anchored_base_rollouts_succeeded += 1
-                if root is not None:
-                    wrote_branch = False
-                    for branch_buffer in branch_buffers:
-                        img_ep, state_ep, action_ep = branch_buffer.as_episode()
-                        appended = _append_episode(
-                            root,
-                            img_ep,
-                            state_ep,
-                            action_ep,
-                            object_id=args.object_id,
-                            category_id=args.category_id,
-                        )
-                        if appended:
-                            wrote_branch = True
-                            written_episodes += 1
-                            anchored_branches_written += 1
-                            anchored_saved_transitions += int(img_ep.shape[0])
-                        else:
-                            discarded_invalid += 1
-                    if wrote_branch and branch_noise_metrics["count"] > 0:
-                        _update_noisy_metric_attrs(root, branch_noise_metrics)
-            else:
-                discarded_unsuccessful += 1
-                if result.failure_stage is not None:
-                    failure_breakdown[result.failure_stage] += 1
-
-            if root is not None:
-                n_transitions, n_episodes = _current_counts(root)
-                elapsed = max(time.time() - t_start, 1e-6)
-                rate = (n_transitions - n0) / elapsed
-                remaining = max(args.target_transitions - n_transitions, 0)
-                eta_min = remaining / max(rate, 1e-6) / 60.0
-                root.attrs["attempted_rollouts"] = attempted_rollouts
-                root.attrs["successful_completions"] = successful_completions
-                root.attrs["written_episodes"] = written_episodes
-                root.attrs["discarded_unsuccessful"] = discarded_unsuccessful
-                root.attrs["discarded_invalid"] = discarded_invalid
-                root.attrs["failure_lift"] = failure_breakdown["lift"]
-                root.attrs["failure_transport"] = failure_breakdown["transport"]
-                root.attrs["failure_place"] = failure_breakdown["place"]
-                root.attrs["xy_range"] = args.xy_range
-                root.attrs["horizon"] = args.horizon
-                root.attrs["lift_height_m"] = args.lift_height
-                root.attrs["lateral_offset_range_m"] = args.lateral_offset_range
-                root.attrs["place_height_m"] = args.place_height
-                root.attrs["start_z_offset"] = args.start_z_offset
-                root.attrs["collection_task"] = "pick_place"
-                update_anchored_root_attrs(
-                    root,
-                    variant=args.variant,
-                    config=anchored_config,
-                    base_rollouts_attempted=anchored_base_rollouts_attempted,
-                    base_rollouts_succeeded=anchored_base_rollouts_succeeded,
-                    branches_attempted=anchored_branches_attempted,
-                    branches_written=anchored_branches_written,
-                    branches_aborted=anchored_branches_aborted,
-                    saved_transitions=anchored_saved_transitions,
-                )
-                print(
-                    f"[stage5-long-table-anchored] transitions={n_transitions}/{args.target_transitions} "
-                    f"episodes={n_episodes} rollouts={attempted_rollouts} "
-                    f"base_successes={successful_completions} branches_written={anchored_branches_written} "
-                    f"branches_aborted={anchored_branches_aborted} rate={rate:.1f} trans/sec "
-                    f"eta={eta_min:.1f}min",
-                    flush=True,
-                )
-    finally:
-        _destroy_env(env)
-
-
 def _collect_noisy_worker(args: argparse.Namespace) -> None:
     from deployment.rl_player import RlPlayer
 
@@ -1774,6 +1138,9 @@ def _collect_noisy_worker(args: argparse.Namespace) -> None:
     obs = obs_dict["obs"]
     noise_state = torch.zeros((env.num_envs, N_ACT), device=device)
     sqrt_dt = math.sqrt(args.ou_dt)
+    closure_gate = ClosureGate(
+        _build_closure_gate_config(args), env.num_envs, device
+    )
 
     per_env_imgs = [[] for _ in range(env.num_envs)]
     per_env_states = [[] for _ in range(env.num_envs)]
@@ -1800,6 +1167,7 @@ def _collect_noisy_worker(args: argparse.Namespace) -> None:
             + args.ou_theta * (args.ou_mu - noise_state) * args.ou_dt
             + sigma_noise * sqrt_dt
         )
+        noise_state = closure_gate.apply(env, noise_state)
         executed_action_t = torch.clamp(clean_action_t + noise_state, -1.0, 1.0)
         action_to_save_t = executed_action_t if args.variant == "noisy_noisy" else clean_action_t
 
@@ -1838,6 +1206,7 @@ def _collect_noisy_worker(args: argparse.Namespace) -> None:
         )
 
     _update_noisy_metric_attrs(root, batch_noise_metrics)
+    _record_closure_gate_attrs(root, closure_gate.cfg, closure_gate.diagnostics())
     _destroy_env(env)
 
 
@@ -2027,6 +1396,9 @@ def _run_release_rollout(
     noise_state = torch.zeros((env.num_envs, N_ACT), device=device)
     sqrt_dt = math.sqrt(args.ou_dt)
     noise_metrics = {"l2_sum": 0.0, "l2_sq_sum": 0.0, "linf_sum": 0.0, "count": 0}
+    closure_gate = ClosureGate(
+        _build_closure_gate_config(args), env.num_envs, device
+    )
 
     images: List[np.ndarray] = []
     states: List[np.ndarray] = []
@@ -2087,6 +1459,7 @@ def _run_release_rollout(
                 + args.ou_theta * (args.ou_mu - noise_state) * args.ou_dt
                 + sigma_noise * sqrt_dt
             )
+            noise_state = closure_gate.apply(env, noise_state)
             executed_action_t = torch.clamp(clean_action_t + noise_state, -1.0, 1.0)
             action_to_save_t = executed_action_t if args.variant == "noisy_noisy" else clean_action_t
 
@@ -2209,6 +1582,8 @@ def _run_release_rollout(
     img = np.stack(images, axis=0).astype(np.uint8) if save_data and images else None
     state = np.stack(states, axis=0).astype(np.float32) if save_data and states else None
     action = np.stack(actions, axis=0).astype(np.float32) if save_data and actions else None
+    setattr(env, "_closure_gate_diag", closure_gate.diagnostics())
+    setattr(env, "_closure_gate_cfg", closure_gate.cfg)
     return ReleaseRolloutResult(
         success=release_success,
         viewer_closed=viewer_closed,
@@ -2351,7 +1726,8 @@ def _collect_pick_place_release(args: argparse.Namespace) -> None:
     max_rollouts = args.dry_run_rollouts if args.dry_run else None
 
     try:
-        while True:
+        _stop = False
+        while not _stop:
             n_transitions = _current_counts(root)[0] if root is not None else 0
             if not args.dry_run and n_transitions >= args.target_transitions:
                 break
@@ -2362,7 +1738,6 @@ def _collect_pick_place_release(args: argparse.Namespace) -> None:
             if args.max_steps is not None and total_env_steps >= args.max_steps:
                 break
 
-            rollout_idx = attempted_rollouts
             start_pose, goal_x, lateral_offset = _sample_end_to_end_start_and_goal_release(
                 env,
                 rng,
@@ -2390,7 +1765,7 @@ def _collect_pick_place_release(args: argparse.Namespace) -> None:
                 discarded_unsafe_place_goals += 1
                 print(
                     f"[stage5-release-long-table] rejected_unsafe_place_goal "
-                    f"rollout={rollout_idx:04d} "
+                    f"attempted={attempted_rollouts} "
                     f"start_pose={np.array(start_pose).round(4).tolist()} "
                     f"place_goal={np.array(place_goal).round(4).tolist()}",
                     flush=True,
@@ -2398,313 +1773,32 @@ def _collect_pick_place_release(args: argparse.Namespace) -> None:
                 continue
 
             print(
-                f"\n[stage5-release-long-table] rollout={rollout_idx:04d} "
+                f"\n[stage5-release-long-table] init "
                 f"start_pose={np.array(start_pose).round(4).tolist()} "
-                f"goal_x={goal_x:+.3f} lateral_offset={lateral_offset:+.3f}",
+                f"goal_x={goal_x:+.3f} lateral_offset={lateral_offset:+.3f} "
+                f"rollouts_per_init={args.rollouts_per_init}",
                 flush=True,
             )
 
-            result = _run_release_rollout(
-                env=env,
-                args=args,
-                device=device,
-                policy=policy,
-                start_pose=start_pose,
-                goals=goals,
-                release_start_goal_idx=release_start_goal_idx,
-                place_goal=place_goal,
-                rollout_idx=rollout_idx,
-                save_data=True,
-                verbose_steps=args.dry_run or args.log_every_step,
-            )
-            attempted_rollouts += 1
-            total_env_steps += result.steps
-            if result.entered_release_phase and result.release_steps_executed < args.release_steps:
+            for rollout_in_init in range(args.rollouts_per_init):
+                n_transitions = _current_counts(root)[0] if root is not None else 0
+                if not args.dry_run and n_transitions >= args.target_transitions:
+                    break
+                if max_rollouts is not None and attempted_rollouts >= max_rollouts:
+                    break
+                if args.max_attempted_episodes is not None and attempted_rollouts >= args.max_attempted_episodes:
+                    break
+                if args.max_steps is not None and total_env_steps >= args.max_steps:
+                    break
+
+                rollout_idx = attempted_rollouts
                 print(
-                    f"[stage5-release-long-table] rollout={rollout_idx:04d} truncated_release "
-                    f"release_start_step={result.release_start_step} "
-                    f"release_steps_executed={result.release_steps_executed}/{args.release_steps} "
-                    f"horizon={args.horizon}",
+                    f"[stage5-release-long-table] rollout={rollout_idx:04d} "
+                    f"(init_rollout={rollout_in_init}/{args.rollouts_per_init - 1})",
                     flush=True,
                 )
 
-            if result.viewer_closed:
-                break
-
-            if result.release_success:
-                successful_completions += 1
-            else:
-                discarded_unsuccessful += 1
-                if result.failure_stage is not None:
-                    failure_breakdown[result.failure_stage] += 1
-                if result.reattempted_after_drop:
-                    print(
-                        f"[stage5-release-long-table] rollout={rollout_idx:04d} drop_reattempt "
-                        f"drop_step={result.drop_step} drop_successes_before={result.drop_successes_before} "
-                        f"final_successes={result.final_successes}",
-                        flush=True,
-                    )
-            if result.release_stable:
-                release_stable_count += 1
-
-            if root is not None and result.success and result.img is not None and result.state is not None and result.action is not None:
-                appended = _append_episode(
-                    root,
-                    result.img,
-                    result.state,
-                    result.action,
-                    object_id=args.object_id,
-                    category_id=args.category_id,
-                )
-                if appended:
-                    written_episodes += 1
-                else:
-                    discarded_invalid += 1
-
-            if args.dry_run and result.img is not None:
-                status = "release_success" if result.release_success else "release_failed"
-                video_path = args.dry_run_video_dir / f"rollout_{rollout_idx:04d}_{status}.mp4"
-                annotated_frames = _annotate_release_rollout_frames(
-                    result.img,
-                    rollout_idx=rollout_idx,
-                    stage_names=result.stage_names or [],
-                    goal_dists=result.goal_dists or [],
-                    successes_per_step=result.successes_per_step or [],
-                    release_phase_per_step=result.release_phase_per_step or [],
-                    release_start_step=result.release_start_step,
-                )
-                _write_rollout_video(video_path, annotated_frames, args.dry_run_video_fps)
-
-            if root is not None:
-                if result.noise_action_delta_count > 0:
-                    _update_noisy_metric_attrs(
-                        root,
-                        {
-                            "l2_sum": result.noise_action_delta_l2_sum,
-                            "l2_sq_sum": result.noise_action_delta_l2_sq_sum,
-                            "linf_sum": result.noise_action_delta_linf_sum,
-                            "count": result.noise_action_delta_count,
-                        },
-                    )
-                n_transitions, n_episodes = _current_counts(root)
-                elapsed = max(time.time() - t_start, 1e-6)
-                rate = (n_transitions - n0) / elapsed
-                remaining = max(args.target_transitions - n_transitions, 0)
-                eta_min = remaining / max(rate, 1e-6) / 60.0
-                root.attrs["attempted_rollouts"] = attempted_rollouts
-                root.attrs["successful_completions"] = successful_completions
-                root.attrs["release_stable_rollouts"] = release_stable_count
-                root.attrs["written_episodes"] = written_episodes
-                root.attrs["discarded_unsuccessful"] = discarded_unsuccessful
-                root.attrs["discarded_invalid"] = discarded_invalid
-                root.attrs["discarded_unsafe_place_goals"] = discarded_unsafe_place_goals
-                root.attrs["failure_lift"] = failure_breakdown["lift"]
-                root.attrs["failure_transport"] = failure_breakdown["transport"]
-                root.attrs["failure_place"] = failure_breakdown["place"]
-                root.attrs["failure_release"] = failure_breakdown["release"]
-                root.attrs["failure_drop_reattempt"] = failure_breakdown["drop_reattempt"]
-                root.attrs["xy_range"] = args.xy_range
-                root.attrs["horizon"] = args.horizon
-                root.attrs["lift_height_m"] = args.lift_height
-                root.attrs["lateral_offset_range_m"] = args.lateral_offset_range
-                root.attrs["place_height_m"] = args.place_height
-                root.attrs["start_z_offset"] = args.start_z_offset
-                root.attrs["variant"] = args.variant
-                root.attrs["noise_strategy"] = args.noise_strategy
-                root.attrs["executed_action_clipped"] = args.variant != "clean"
-                root.attrs["release_steps"] = args.release_steps
-                root.attrs["release_arm_mode"] = args.release_arm_mode
-                root.attrs["release_hand_blend"] = args.release_hand_blend
-                root.attrs["place_goal_x_margin_m"] = args.place_goal_x_margin
-                root.attrs["place_goal_y_margin_m"] = args.place_goal_y_margin
-                root.attrs["collection_task"] = "pick_place_release_experimental"
-                print(
-                    f"[stage5-release-long-table] transitions={n_transitions}/{args.target_transitions} "
-                    f"episodes={n_episodes} attempted={attempted_rollouts} "
-                    f"stable={release_stable_count} written={written_episodes} "
-                    f"rate={rate:.1f} trans/sec eta={eta_min:.1f}min",
-                    flush=True,
-                )
-    finally:
-        _destroy_env(env)
-
-
-def _collect_anchored_pick_place_release(args: argparse.Namespace) -> None:
-    from deployment.rl_player import RlPlayer
-
-    assert CONFIG_PATH.exists(), f"Missing policy config: {CONFIG_PATH}"
-    assert CHECKPOINT_PATH.exists(), f"Missing policy checkpoint: {CHECKPOINT_PATH}"
-
-    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    anchored_config = build_anchored_recovery_config(args)
-    rng = np.random.default_rng(args.seed)
-    torch.manual_seed(args.seed)
-
-    root = None
-    n0 = 0
-    e0 = 0
-    if not args.dry_run:
-        root = _open_or_create_zarr(
-            args.output_zarr,
-            img_h=DATASET_CAMERA_HEIGHT,
-            img_w=DATASET_CAMERA_WIDTH,
-            resume=args.resume,
-        )
-        n0, e0 = _current_counts(root)
-        if args.resume:
-            validate_anchored_resume_attrs(
-                root,
-                variant=args.variant,
-                config=anchored_config,
-            )
-        _update_object_registry(root, args)
-        _record_geometry_attrs(root, args)
-        root.attrs["collection_task"] = "pick_place_release_experimental"
-        update_anchored_root_attrs(
-            root,
-            variant=args.variant,
-            config=anchored_config,
-            base_rollouts_attempted=0,
-            base_rollouts_succeeded=0,
-            branches_attempted=0,
-            branches_written=0,
-            branches_aborted=0,
-            saved_transitions=0,
-        )
-
-    nominal_start_pose = _load_nominal_start_pose(
-        args.object_category,
-        args.object_name,
-        args.task_name,
-        start_z_offset=args.start_z_offset,
-    )
-    bootstrap_goal_x = _default_goal_x(args)
-    bootstrap_goals, _, _ = _build_pick_place_release_goals(
-        nominal_start_pose,
-        goal_x=bootstrap_goal_x,
-        lift_height=args.lift_height,
-        place_height=args.place_height,
-        place_hold_goals=args.place_hold_goals,
-        release_hold_goals=args.release_steps,
-    )
-
-    print(
-        f"[stage5-release-long-table-anchored] output_zarr={args.output_zarr}",
-        flush=True,
-    )
-    print(
-        "[stage5-release-long-table-anchored] "
-        f"branches_per_rollout={anchored_config.branches_per_rollout} "
-        f"perturb_steps={anchored_config.perturb_steps} "
-        f"recovery_steps={anchored_config.recovery_steps} "
-        f"branch_window=[{anchored_config.branch_min_step}, {anchored_config.branch_max_step}]",
-        flush=True,
-    )
-
-    env = _make_long_table_env(
-        num_envs=1,
-        nominal_start_pose=nominal_start_pose,
-        goal_poses=bootstrap_goals,
-        horizon=args.horizon,
-        headless=not args.viewer,
-        device=device,
-        seed=args.seed,
-        object_name=args.object_name,
-    )
-    env.gym.refresh_actor_root_state_tensor(env.sim)
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-    env.set_env_state(checkpoint[0]["env_state"])
-    print(
-        f"[stage5-release-long-table-anchored] camera pos={_jsonable(env.cfg['env']['datasetCameraPosition'])} "
-        f"target={_jsonable(env.cfg['env']['datasetCameraTarget'])}",
-        flush=True,
-    )
-    policy = RlPlayer(
-        num_observations=N_OBS,
-        num_actions=N_ACT,
-        config_path=str(CONFIG_PATH),
-        checkpoint_path=str(CHECKPOINT_PATH),
-        device=device,
-        num_envs=1,
-    )
-
-    attempted_rollouts = 0
-    successful_completions = 0
-    release_stable_count = 0
-    written_episodes = 0
-    discarded_unsuccessful = 0
-    discarded_invalid = 0
-    discarded_unsafe_place_goals = 0
-    failure_breakdown: Dict[str, int] = {name: 0 for name in RELEASE_GOAL_STAGE_NAMES}
-    failure_breakdown["drop_reattempt"] = 0
-    anchored_base_rollouts_attempted = 0
-    anchored_base_rollouts_succeeded = 0
-    anchored_branches_attempted = 0
-    anchored_branches_written = 0
-    anchored_branches_aborted = 0
-    anchored_saved_transitions = 0
-    total_env_steps = 0
-    t_start = time.time()
-    max_rollouts = args.dry_run_rollouts if args.dry_run else None
-
-    try:
-        while True:
-            n_transitions = _current_counts(root)[0] if root is not None else 0
-            if not args.dry_run and n_transitions >= args.target_transitions:
-                break
-            if max_rollouts is not None and attempted_rollouts >= max_rollouts:
-                break
-            if (
-                args.max_attempted_episodes is not None
-                and attempted_rollouts >= args.max_attempted_episodes
-            ):
-                break
-            if args.max_steps is not None and total_env_steps >= args.max_steps:
-                break
-
-            rollout_idx = attempted_rollouts
-            start_pose, goal_x, lateral_offset = _sample_end_to_end_start_and_goal_release(
-                env,
-                rng,
-                nominal_start_pose,
-                args,
-            )
-            goals, release_start_goal_idx, place_goal = _build_pick_place_release_goals(
-                start_pose,
-                goal_x=goal_x,
-                lift_height=args.lift_height,
-                place_height=args.place_height,
-                place_hold_goals=args.place_hold_goals,
-                release_hold_goals=args.release_steps,
-            )
-
-            if not _place_goal_in_safe_zone(
-                env,
-                place_goal,
-                table_x_half_extent=args.table_x_half_extent,
-                table_x_inset_margin=args.place_goal_x_margin,
-                table_y_half_extent=args.table_y_half_extent,
-                table_y_inset_margin=args.place_goal_y_margin,
-            ):
-                discarded_invalid += 1
-                discarded_unsafe_place_goals += 1
-                print(
-                    f"[stage5-release-long-table-anchored] rejected_unsafe_place_goal "
-                    f"rollout={rollout_idx:04d} start_pose={np.array(start_pose).round(4).tolist()} "
-                    f"place_goal={np.array(place_goal).round(4).tolist()}",
-                    flush=True,
-                )
-                continue
-
-            print(
-                f"\n[stage5-release-long-table-anchored] rollout={rollout_idx:04d} "
-                f"start_pose={np.array(start_pose).round(4).tolist()} "
-                f"goal_x={goal_x:+.3f} lateral_offset={lateral_offset:+.3f}",
-                flush=True,
-            )
-
-            result, branch_buffers, branch_noise_metrics, branch_stats = (
-                _run_anchored_release_rollout(
+                result = _run_release_rollout(
                     env=env,
                     args=args,
                     device=device,
@@ -2714,120 +1808,122 @@ def _collect_anchored_pick_place_release(args: argparse.Namespace) -> None:
                     release_start_goal_idx=release_start_goal_idx,
                     place_goal=place_goal,
                     rollout_idx=rollout_idx,
-                    verbose_steps=args.log_every_step,
-                    rng=rng,
-                    anchored_config=anchored_config,
+                    save_data=True,
+                    verbose_steps=args.dry_run or args.log_every_step,
                 )
-            )
-            attempted_rollouts += 1
-            anchored_base_rollouts_attempted += 1
-            total_env_steps += result.steps
-            anchored_branches_attempted += branch_stats["attempted"]
-            anchored_branches_aborted += branch_stats["aborted"]
-
-            if result.entered_release_phase and result.release_steps_executed < args.release_steps:
-                print(
-                    f"[stage5-release-long-table-anchored] rollout={rollout_idx:04d} truncated_release "
-                    f"release_start_step={result.release_start_step} "
-                    f"release_steps_executed={result.release_steps_executed}/{args.release_steps} "
-                    f"horizon={args.horizon}",
-                    flush=True,
-                )
-
-            if result.viewer_closed:
-                break
-
-            if result.release_success:
-                successful_completions += 1
-                anchored_base_rollouts_succeeded += 1
-            else:
-                discarded_unsuccessful += 1
-                if result.failure_stage is not None:
-                    failure_breakdown[result.failure_stage] += 1
-                if result.reattempted_after_drop:
+                attempted_rollouts += 1
+                total_env_steps += result.steps
+                if result.entered_release_phase and result.release_steps_executed < args.release_steps:
                     print(
-                        f"[stage5-release-long-table-anchored] rollout={rollout_idx:04d} drop_reattempt "
-                        f"drop_step={result.drop_step} drop_successes_before={result.drop_successes_before} "
-                        f"final_successes={result.final_successes}",
+                        f"[stage5-release-long-table] rollout={rollout_idx:04d} truncated_release "
+                        f"release_start_step={result.release_start_step} "
+                        f"release_steps_executed={result.release_steps_executed}/{args.release_steps} "
+                        f"horizon={args.horizon}",
                         flush=True,
                     )
 
-            if result.release_stable:
-                release_stable_count += 1
+                if result.viewer_closed:
+                    _stop = True
+                    break
 
-            if root is not None and result.success:
-                wrote_branch = False
-                for branch_buffer in branch_buffers:
-                    img_ep, state_ep, action_ep = branch_buffer.as_episode()
+                if result.release_success:
+                    successful_completions += 1
+                else:
+                    discarded_unsuccessful += 1
+                    if result.failure_stage is not None:
+                        failure_breakdown[result.failure_stage] += 1
+                    if result.reattempted_after_drop:
+                        print(
+                            f"[stage5-release-long-table] rollout={rollout_idx:04d} drop_reattempt "
+                            f"drop_step={result.drop_step} drop_successes_before={result.drop_successes_before} "
+                            f"final_successes={result.final_successes}",
+                            flush=True,
+                        )
+                if result.release_stable:
+                    release_stable_count += 1
+
+                if root is not None and result.success and result.img is not None and result.state is not None and result.action is not None:
                     appended = _append_episode(
                         root,
-                        img_ep,
-                        state_ep,
-                        action_ep,
+                        result.img,
+                        result.state,
+                        result.action,
                         object_id=args.object_id,
                         category_id=args.category_id,
                     )
                     if appended:
-                        wrote_branch = True
                         written_episodes += 1
-                        anchored_branches_written += 1
-                        anchored_saved_transitions += int(img_ep.shape[0])
                     else:
                         discarded_invalid += 1
-                if wrote_branch and branch_noise_metrics["count"] > 0:
-                    _update_noisy_metric_attrs(root, branch_noise_metrics)
 
-            if root is not None:
-                n_transitions, n_episodes = _current_counts(root)
-                elapsed = max(time.time() - t_start, 1e-6)
-                rate = (n_transitions - n0) / elapsed
-                remaining = max(args.target_transitions - n_transitions, 0)
-                eta_min = remaining / max(rate, 1e-6) / 60.0
-                root.attrs["attempted_rollouts"] = attempted_rollouts
-                root.attrs["successful_completions"] = successful_completions
-                root.attrs["release_stable_rollouts"] = release_stable_count
-                root.attrs["written_episodes"] = written_episodes
-                root.attrs["discarded_unsuccessful"] = discarded_unsuccessful
-                root.attrs["discarded_invalid"] = discarded_invalid
-                root.attrs["discarded_unsafe_place_goals"] = discarded_unsafe_place_goals
-                root.attrs["failure_lift"] = failure_breakdown["lift"]
-                root.attrs["failure_transport"] = failure_breakdown["transport"]
-                root.attrs["failure_place"] = failure_breakdown["place"]
-                root.attrs["failure_release"] = failure_breakdown["release"]
-                root.attrs["failure_drop_reattempt"] = failure_breakdown["drop_reattempt"]
-                root.attrs["xy_range"] = args.xy_range
-                root.attrs["horizon"] = args.horizon
-                root.attrs["lift_height_m"] = args.lift_height
-                root.attrs["lateral_offset_range_m"] = args.lateral_offset_range
-                root.attrs["place_height_m"] = args.place_height
-                root.attrs["start_z_offset"] = args.start_z_offset
-                root.attrs["release_steps"] = args.release_steps
-                root.attrs["release_arm_mode"] = args.release_arm_mode
-                root.attrs["release_hand_blend"] = args.release_hand_blend
-                root.attrs["place_goal_x_margin_m"] = args.place_goal_x_margin
-                root.attrs["place_goal_y_margin_m"] = args.place_goal_y_margin
-                root.attrs["collection_task"] = "pick_place_release_experimental"
-                update_anchored_root_attrs(
-                    root,
-                    variant=args.variant,
-                    config=anchored_config,
-                    base_rollouts_attempted=anchored_base_rollouts_attempted,
-                    base_rollouts_succeeded=anchored_base_rollouts_succeeded,
-                    branches_attempted=anchored_branches_attempted,
-                    branches_written=anchored_branches_written,
-                    branches_aborted=anchored_branches_aborted,
-                    saved_transitions=anchored_saved_transitions,
-                )
-                print(
-                    f"[stage5-release-long-table-anchored] transitions={n_transitions}/{args.target_transitions} "
-                    f"episodes={n_episodes} attempted={attempted_rollouts} "
-                    f"release_successes={successful_completions} stable={release_stable_count} "
-                    f"branches_written={anchored_branches_written} branches_aborted={anchored_branches_aborted} "
-                    f"rate={rate:.1f} trans/sec eta={eta_min:.1f}min",
-                    flush=True,
-                )
+                if args.dry_run and result.img is not None:
+                    status = "release_success" if result.release_success else "release_failed"
+                    video_path = args.dry_run_video_dir / f"rollout_{rollout_idx:04d}_{status}.mp4"
+                    annotated_frames = _annotate_release_rollout_frames(
+                        result.img,
+                        rollout_idx=rollout_idx,
+                        stage_names=result.stage_names or [],
+                        goal_dists=result.goal_dists or [],
+                        successes_per_step=result.successes_per_step or [],
+                        release_phase_per_step=result.release_phase_per_step or [],
+                        release_start_step=result.release_start_step,
+                    )
+                    _write_rollout_video(video_path, annotated_frames, args.dry_run_video_fps)
+
+                if root is not None:
+                    if result.noise_action_delta_count > 0:
+                        _update_noisy_metric_attrs(
+                            root,
+                            {
+                                "l2_sum": result.noise_action_delta_l2_sum,
+                                "l2_sq_sum": result.noise_action_delta_l2_sq_sum,
+                                "linf_sum": result.noise_action_delta_linf_sum,
+                                "count": result.noise_action_delta_count,
+                            },
+                        )
+                    n_transitions, n_episodes = _current_counts(root)
+                    elapsed = max(time.time() - t_start, 1e-6)
+                    rate = (n_transitions - n0) / elapsed
+                    remaining = max(args.target_transitions - n_transitions, 0)
+                    eta_min = remaining / max(rate, 1e-6) / 60.0
+                    root.attrs["attempted_rollouts"] = attempted_rollouts
+                    root.attrs["successful_completions"] = successful_completions
+                    root.attrs["release_stable_rollouts"] = release_stable_count
+                    root.attrs["written_episodes"] = written_episodes
+                    root.attrs["discarded_unsuccessful"] = discarded_unsuccessful
+                    root.attrs["discarded_invalid"] = discarded_invalid
+                    root.attrs["discarded_unsafe_place_goals"] = discarded_unsafe_place_goals
+                    root.attrs["failure_lift"] = failure_breakdown["lift"]
+                    root.attrs["failure_transport"] = failure_breakdown["transport"]
+                    root.attrs["failure_place"] = failure_breakdown["place"]
+                    root.attrs["failure_release"] = failure_breakdown["release"]
+                    root.attrs["failure_drop_reattempt"] = failure_breakdown["drop_reattempt"]
+                    root.attrs["xy_range"] = args.xy_range
+                    root.attrs["horizon"] = args.horizon
+                    root.attrs["lift_height_m"] = args.lift_height
+                    root.attrs["lateral_offset_range_m"] = args.lateral_offset_range
+                    root.attrs["place_height_m"] = args.place_height
+                    root.attrs["start_z_offset"] = args.start_z_offset
+                    root.attrs["variant"] = args.variant
+                    root.attrs["noise_strategy"] = args.noise_strategy
+                    root.attrs["executed_action_clipped"] = args.variant != "clean"
+                    root.attrs["release_steps"] = args.release_steps
+                    root.attrs["release_arm_mode"] = args.release_arm_mode
+                    root.attrs["release_hand_blend"] = args.release_hand_blend
+                    root.attrs["place_goal_x_margin_m"] = args.place_goal_x_margin
+                    root.attrs["place_goal_y_margin_m"] = args.place_goal_y_margin
+                    root.attrs["rollouts_per_init"] = args.rollouts_per_init
+                    root.attrs["collection_task"] = "pick_place_release_experimental"
+                    print(
+                        f"[stage5-release-long-table] transitions={n_transitions}/{args.target_transitions} "
+                        f"episodes={n_episodes} attempted={attempted_rollouts} "
+                        f"stable={release_stable_count} written={written_episodes} "
+                        f"rate={rate:.1f} trans/sec eta={eta_min:.1f}min",
+                        flush=True,
+                    )
     finally:
         _destroy_env(env)
+
 
 
 def _normalize_collection_type_args(
@@ -2941,6 +2037,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ou-theta", type=float, default=0.15)
     parser.add_argument("--ou-mu", type=float, default=0.0)
     parser.add_argument("--ou-dt", type=float, default=1.0)
+    # --- Phase-gated noise for grasp closure -------------------------------
+    parser.add_argument(
+        "--noise-phase-gating",
+        choices=["off", "proximity", "palm_z"],
+        default="off",
+        help="Suppress action noise while the hand closes on the object.",
+    )
+    parser.add_argument("--closure-proximity-threshold", type=float, default=0.08,
+                        help="Palm-object distance (m) below which = closure window.")
+    parser.add_argument("--closure-palm-z-threshold", type=float, default=0.66,
+                        help="Palm z (m) below which = closure window (palm_z mode).")
+    parser.add_argument("--closure-noise-scale", type=float, default=0.0,
+                        help="Noise multiplier INSIDE the closure window (0.0 = full kill).")
+    parser.add_argument("--closure-groups", type=str,
+                        default="wrist,thumb,index,middle,ring,pinky",
+                        help="Comma-separated action groups to gate (excludes arm_base by default).")
+    parser.add_argument("--closure-window-padding", type=int, default=5,
+                        help="Extra steps to keep noise off after exiting the threshold.")
+    # --- Blunt fallback: global per-group noise reduction ------------------
+    parser.add_argument("--finger-noise-multiplier", type=float, default=1.0,
+                        help="Global scale on thumb/index/middle/ring/pinky base stds.")
+    parser.add_argument("--wrist-noise-multiplier", type=float, default=1.0,
+                        help="Global scale on arm_wrist base std.")
     parser.add_argument("--anchored-branches-per-rollout", type=int, default=3)
     parser.add_argument("--anchored-branch-min-step", type=int, default=10)
     parser.add_argument("--anchored-branch-max-step", type=str, default="auto")
@@ -2952,6 +2071,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--release-xy-tolerance", type=float, default=RELEASE_XY_TOLERANCE_M)
     parser.add_argument("--release-z-tolerance", type=float, default=RELEASE_Z_TOLERANCE_M)
     parser.add_argument("--release-speed-tolerance", type=float, default=RELEASE_SPEED_TOLERANCE_MPS)
+    parser.add_argument("--rollouts-per-init", type=int, default=1,
+                        help="Number of noisy rollouts per sampled start_pose (pick_place_release only).")
     parser.add_argument("--noisy-worker", action="store_true")
     parser.add_argument("--worker-batch-idx", type=int, default=None)
     parser.add_argument("--worker-start-x", type=float, default=None)

@@ -154,6 +154,21 @@ def _run_one(spec: ObjectSpec, args: argparse.Namespace) -> None:
 
     cmd.extend(["--variant", args.variant])
 
+    # Forward phase-gated-noise + blunt-fallback flags to the collector. The
+    # collector applies the multipliers (its wrapped _resolve_noise_args), so we
+    # forward the raw multipliers here rather than baking them into
+    # resolve_noise_config below (which would double-apply).
+    cmd.extend([
+        "--noise-phase-gating", str(args.noise_phase_gating),
+        "--closure-proximity-threshold", str(args.closure_proximity_threshold),
+        "--closure-palm-z-threshold", str(args.closure_palm_z_threshold),
+        "--closure-noise-scale", str(args.closure_noise_scale),
+        "--closure-groups", str(args.closure_groups),
+        "--closure-window-padding", str(args.closure_window_padding),
+        "--finger-noise-multiplier", str(args.finger_noise_multiplier),
+        "--wrist-noise-multiplier", str(args.wrist_noise_multiplier),
+    ])
+
     if args.collection_type != "pick_place_release" and args.max_batches is not None:
         cmd.extend(["--max-batches", str(args.max_batches)])
 
@@ -195,13 +210,13 @@ def _run_one(spec: ObjectSpec, args: argparse.Namespace) -> None:
                 ]
             )
 
-    if args.collection_type in {"pickup", "pick_place"}:
+    if args.collection_type == "pickup":
         if args.variant != "clean":
-            cmd.extend(
-                [
-                    "--pickup-success-hold-steps", str(args.pickup_success_hold_steps),
-                ]
-            )
+            cmd.extend(["--pickup-success-hold-steps", str(args.pickup_success_hold_steps)])
+        cmd.extend(["--rollouts-per-init", str(args.rollouts_per_init)])
+    elif args.collection_type == "pick_place":
+        if args.variant != "clean":
+            cmd.extend(["--pickup-success-hold-steps", str(args.pickup_success_hold_steps)])
     elif args.collection_type == "pick_place_release":
         cmd.extend(
             [
@@ -215,6 +230,7 @@ def _run_one(spec: ObjectSpec, args: argparse.Namespace) -> None:
                 "--table-y-inset-margin", str(args.table_y_inset_margin),
                 "--place-goal-x-margin", str(args.place_goal_x_margin),
                 "--place-goal-y-margin", str(args.place_goal_y_margin),
+                "--rollouts-per-init", str(args.rollouts_per_init),
             ]
         )
     elif args.collection_type != "pickup":
@@ -300,11 +316,22 @@ def main() -> None:
     p.add_argument("--ou-theta", type=float, default=0.15)
     p.add_argument("--ou-mu", type=float, default=0.0)
     p.add_argument("--ou-dt", type=float, default=1.0)
+    # --- Phase-gated noise for grasp closure (forwarded to the collector) ---
+    p.add_argument("--noise-phase-gating", choices=["off", "proximity", "palm_z"], default="off")
+    p.add_argument("--closure-proximity-threshold", type=float, default=0.08)
+    p.add_argument("--closure-palm-z-threshold", type=float, default=0.66)
+    p.add_argument("--closure-noise-scale", type=float, default=0.0)
+    p.add_argument("--closure-groups", type=str, default="wrist,thumb,index,middle,ring,pinky")
+    p.add_argument("--closure-window-padding", type=int, default=5)
+    p.add_argument("--finger-noise-multiplier", type=float, default=1.0)
+    p.add_argument("--wrist-noise-multiplier", type=float, default=1.0)
     p.add_argument("--anchored-branches-per-rollout", type=int, default=3)
     p.add_argument("--anchored-branch-min-step", type=int, default=10)
     p.add_argument("--anchored-branch-max-step", type=str, default="auto")
     p.add_argument("--anchored-perturb-steps", type=int, default=3)
     p.add_argument("--anchored-recovery-steps", type=int, default=15)
+    p.add_argument("--rollouts-per-init", type=int, default=1,
+                   help="Number of noisy rollouts per sampled start_pose (pick_place_release only).")
     args = p.parse_args()
     _validate_mode_args(args)
 
