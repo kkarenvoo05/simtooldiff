@@ -70,8 +70,13 @@ DEF_LIFT_HEIGHT_M = 0.20
 DEF_PLACE_HEIGHT_M = 0.02
 DEF_PLACE_HOLD_GOALS = 10
 DEF_RELEASE_STEPS = 45
+<<<<<<< HEAD
 DEF_HORIZON_WITH_RELEASE = 350
 DEF_RELEASE_XY_TOL_M = 0.06
+=======
+DEF_HORIZON_WITH_RELEASE = 325
+DEF_RELEASE_XY_TOL_M = 0.05
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
 DEF_RELEASE_Z_TOL_M = 0.04
 DEF_RELEASE_SPEED_TOL_MPS = 0.25
 DEF_TABLE_X_HALF_EXTENT_M = 0.60 / 2.0
@@ -112,8 +117,11 @@ def _classify_release_pose_based(
     release_z_tolerance: float,
     release_speed_tolerance: float,
     reattempted_after_drop: bool,
+<<<<<<< HEAD
     best_post_lift_xy_error_m: float = float("inf"),
     best_post_lift_speed_mps: float = float("inf"),
+=======
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
 ):
     """Pose-based, diffusion-policy-fair release success.
 
@@ -124,6 +132,7 @@ def _classify_release_pose_based(
     up, carried it to the place goal, and left it resting there within the same
     xy / z / speed tolerances the dataset was scored on.
 
+<<<<<<< HEAD
     Two placement paths are accepted:
     - Final-frame: object is on the table within xy/z tolerance at episode end.
     - Best-post-lift: the object was ever within xy tolerance AND moving slowly
@@ -132,6 +141,8 @@ def _classify_release_pose_based(
       gated here because the object may be elevated in the gripper at the closest
       approach.
 
+=======
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
     Returns (release_success, placed_near_goal, at_rest, failure_stage).
     """
     placed_near_goal = (
@@ -140,6 +151,7 @@ def _classify_release_pose_based(
         and final_place_z_error_m <= release_z_tolerance
     )
     at_rest = final_object_speed_mps <= release_speed_tolerance
+<<<<<<< HEAD
     # Alternative: best xy proximity after lift paired with final-frame speed.
     # Uses best_post_lift_xy (object was over the goal at some point while being
     # carried) but final_object_speed (object came to rest by episode end).
@@ -152,6 +164,10 @@ def _classify_release_pose_based(
     effective_placed = placed_near_goal or best_placed_near_goal
     release_success = (
         valid_start and lifted and transported and effective_placed
+=======
+    release_success = (
+        valid_start and lifted and transported and placed_near_goal and at_rest
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
         and not reattempted_after_drop
     )
     # Report the first (earliest-stage) unmet condition so the breakdown points
@@ -164,9 +180,15 @@ def _classify_release_pose_based(
         failure_stage = "drop_reattempt"
     elif not transported:
         failure_stage = "no_transport"
+<<<<<<< HEAD
     elif not effective_placed:
         failure_stage = "no_place"
     elif not at_rest and not best_placed_near_goal:
+=======
+    elif not placed_near_goal:
+        failure_stage = "no_place"
+    elif not at_rest:
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
         failure_stage = "unstable"
     else:
         failure_stage = None
@@ -536,9 +558,12 @@ def run_worker(args) -> None:
         )
         preview_frames = [init_native] if save_previews else []
 
+<<<<<<< HEAD
         # Pre-compute place goal array so it's available inside the step loop.
         place_goal_np = np.asarray(place_goal, dtype=np.float32)
 
+=======
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
         # Per-episode release tracking (mirrors _run_release_rollout).
         max_successes_seen = 0
         final_successes = 0
@@ -551,11 +576,14 @@ def run_worker(args) -> None:
         # ever lifted it (eval-setup artifact, excluded from the denominator).
         invalid_start = False
         prev_stage_name = None
+<<<<<<< HEAD
         # Best placement after first lift: minimum xy_error seen once the object
         # has cleared the lift threshold. No z/on-table gate so this captures
         # "hand positioned over goal" and "on table before rolling off" alike.
         best_post_lift_xy_m = float("inf")
         best_post_lift_speed_at_best_xy = float("inf")
+=======
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
 
         action_plan = deque()
         for step in range(args.horizon):
@@ -589,6 +617,7 @@ def run_worker(args) -> None:
             max_object_height_above_init_m = max(
                 max_object_height_above_init_m, object_height_above_init_m,
             )
+<<<<<<< HEAD
             # Track best xy proximity to goal after the object has been lifted,
             # so we can detect "placed near goal then rolled off" and similar.
             if max_object_height_above_init_m >= args.min_lift_height:
@@ -599,6 +628,8 @@ def run_worker(args) -> None:
                 if cur_xy_err < best_post_lift_xy_m:
                     best_post_lift_xy_m = cur_xy_err
                     best_post_lift_speed_at_best_xy = cur_speed
+=======
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
             # Degenerate spawn: object fell off the table before it was ever
             # lifted. Guarding on "not yet lifted" keeps genuine post-lift drops
             # (a real policy failure) from being excluded.
@@ -651,7 +682,11 @@ def run_worker(args) -> None:
         # Final-state metrics + classification (identical to the collector).
         final_object_pose_np = env.object_pose[0, 0:7].detach().cpu().numpy()
         final_object_linvel_np = env.object_linvel[0].detach().cpu().numpy()
+<<<<<<< HEAD
         # place_goal_np already computed before the loop.
+=======
+        place_goal_np = np.asarray(place_goal, dtype=np.float32)
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
         final_place_xy_error_m = float(np.linalg.norm(final_object_pose_np[0:2] - place_goal_np[0:2]))
         final_place_z_error_m = float(abs(final_object_pose_np[2] - place_goal_np[2]))
         final_object_speed_mps = float(np.linalg.norm(final_object_linvel_np))
@@ -682,8 +717,11 @@ def run_worker(args) -> None:
             release_z_tolerance=args.release_z_tolerance,
             release_speed_tolerance=args.release_speed_tolerance,
             reattempted_after_drop=reattempted_after_drop,
+<<<<<<< HEAD
             best_post_lift_xy_error_m=best_post_lift_xy_m,
             best_post_lift_speed_mps=best_post_lift_speed_at_best_xy,
+=======
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
         )
 
         if save_previews:
@@ -704,6 +742,7 @@ def run_worker(args) -> None:
             "lifted": bool(lifted),
             "transported": bool(transported),
             "placed_near_goal": bool(placed_near_goal),
+<<<<<<< HEAD
             "final_object_on_table": bool(final_object_on_table),
             "stable": bool(placed_near_goal and at_rest),
             "max_successes_seen": int(max_successes_seen),
@@ -727,6 +766,11 @@ def run_worker(args) -> None:
             "tol_speed_mps": args.release_speed_tolerance,
             "tol_min_lift_m": args.min_lift_height,
             "tol_min_transport_m": args.min_effective_transport,
+=======
+            "stable": bool(placed_near_goal and at_rest),
+            "max_successes_seen": int(max_successes_seen),
+            "failure_stage": failure_stage if not release_success else None,
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
         }
 
     attempted = 0
@@ -738,11 +782,17 @@ def run_worker(args) -> None:
     placed_count = 0
     stable_count = 0
     failure_breakdown: Counter = Counter()
+<<<<<<< HEAD
     episode_log = []
 
     for ep_idx in range(args.episodes_per_object):
         outcome = run_episode(ep_idx)
         episode_log.append({"ep": ep_idx, **outcome})
+=======
+
+    for ep_idx in range(args.episodes_per_object):
+        outcome = run_episode(ep_idx)
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
         attempted += 1
         if not outcome["valid_start"]:
             # Degenerate spawn: excluded from the denominator and from the
@@ -793,7 +843,10 @@ def run_worker(args) -> None:
         "failure_breakdown": dict(failure_breakdown),
         "preview_dir": str(args.video_dir) if save_previews else None,
         "previews_saved": preview_counts if save_previews else {"success": 0, "fail": 0},
+<<<<<<< HEAD
         "episodes": episode_log,
+=======
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22
     }
     Path(args.result_json).write_text(json.dumps(result, indent=2))
     print(
@@ -865,4 +918,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     main()
+=======
+    main()
+>>>>>>> 4302f8066a901dd4e29b381e54b55ecc152c2c22

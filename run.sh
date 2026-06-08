@@ -7,7 +7,7 @@
 #SBATCH --mem-per-cpu=16G
 
 # only use the following on partition with GPUs
-#SBATCH --gres=gpu:a5000:1
+#SBATCH --gres=gpu:l40s:1
 
 #SBATCH --job-name="eval_diffusion_policy"
 #SBATCH --output=logs/eval_diffusion_policy-%j.out
@@ -59,18 +59,32 @@ conda activate str
 # ------ EVAL ------
 
 # python scripts/eval_diffusion_policy.py \
-#     --checkpoint /move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt \
+#     --checkpoint /nlp/scr/chrzhang/diffusion_policy/data/outputs/2026.05.29/01.27.09_train_diffusion_unet_hybrid_simtool_image_clean_pickup_more_planning/checkpoints/epoch=0016-val_loss=0.0400.ckpt \
 #     --split train \
 #     --episodes-per-object 32 \
 #     --num-envs 8 \
-#     --output-json data/diffusion_eval/epoch0050_train.json
+#     --output-json data/diffusion_eval/pickup_unet_more_planning.json
 
 # python scripts/eval_diffusion_policy.py \
-#     --checkpoint /move/u/chrzhang/diffusion_policy/data/outputs/2026.05.06/22.17.26_train_diffusion_unet_hybrid_simtool_image_state29/checkpoints/epoch=0050-val_loss=0.0465.ckpt \
+#     --checkpoint /nlp/scr/chrzhang/diffusion_policy/data/outputs/2026.05.29/01.27.09_train_diffusion_unet_hybrid_simtool_image_clean_pickup_more_planning/checkpoints/epoch=0016-val_loss=0.0400.ckpt \
 #     --split ood \
 #     --episodes-per-object 32 \
 #     --num-envs 8 \
-#     --output-json data/diffusion_eval/epoch0050_ood.json
+#     --output-json data/diffusion_eval/pickup_unet_more_planning_ood.json
+
+python scripts/eval_diffusion_policy_pick_place_release.py \
+    --checkpoint /nlp/scr/chrzhang/diffusion_policy/data/outputs/2026.05.29/11.43.06_train_diffusion_transformer_hybrid_simtool_image_clean_ppr_more_planning/checkpoints/epoch=0020-val_loss=0.0659.ckpt \
+    --split train \
+    --episodes-per-object 8 \
+    --output-json data/diffusion_eval/ppr_transformer_more_planning.json
+
+python scripts/eval_diffusion_policy_pick_place_release.py \
+    --checkpoint /nlp/scr/chrzhang/diffusion_policy/data/outputs/2026.05.29/11.43.06_train_diffusion_transformer_hybrid_simtool_image_clean_ppr_more_planning/checkpoints/epoch=0020-val_loss=0.0659.ckpt \
+    --split ood \
+    --episodes-per-object 8 \
+    # --num-envs 8 \
+    --output-json data/diffusion_eval/ppr_transformer_more_planning_ood.json
+
 
 echo "Done"
 h=$((SECONDS / 3600))

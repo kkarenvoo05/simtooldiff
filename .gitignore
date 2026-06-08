@@ -138,6 +138,7 @@ celerybeat.pid
 .env
 .envrc
 .venv
+.conda_env/
 env/
 venv/
 ENV/
@@ -263,5 +264,5 @@ venv/
 # =========================
 .DS_Store
 .vscode/
-.idea/IsaacGym_Preview_4_Package.tar.gz
+.idea/
 IsaacGym_Preview_4_Package.tar.gz

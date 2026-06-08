@@ -476,7 +476,12 @@ def _sample_end_to_end_start_and_goal_release(
             f"No valid footprint-safe release goal X range: [{goal_x_floor:.4f}, {goal_x_ceiling:.4f}]"
         )
 
-    start_x_low = start_band[0]
+    # Adjust start_x_low for the object's left footprint so the object's leftmost
+    # keypoint stays within the inset margin rather than hanging off the table edge.
+    offset_x_min, _, _, _ = _object_xy_offset_bounds_for_quat(
+        env, np.asarray(nominal_start_pose[3:7], dtype=np.float32)
+    )
+    start_x_low = start_band[0] - offset_x_min  # offset_x_min <= 0, so this >= start_band[0]
     start_x_high = min(start_band[1], goal_x_ceiling - min_transport)
     if start_x_low >= start_x_high:
         raise ValueError(
